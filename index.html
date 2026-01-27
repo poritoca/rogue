@@ -17,6 +17,8 @@ html, body { margin:0; background:#0b0d10; color:var(--fg);
   font-family:ui-monospace,Menlo,Consolas,monospace;
   overflow:hidden; height:100svh;
   touch-action: manipulation;
+  -webkit-text-size-adjust:100%;
+  overscroll-behavior:none;
 }
 .btn{padding:8px 10px;border-radius:10px;border:1px solid var(--line);background:#141b23;color:#e9f3ff;user-select:none;cursor:pointer;font-size:13px;line-height:1}
 .btn:active{filter:brightness(1.1)}
@@ -24,7 +26,7 @@ html, body { margin:0; background:#0b0d10; color:var(--fg);
 .titleCard{width:min(720px,92vw);background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:12px}
 .row{display:flex;gap:6px;flex-wrap:wrap;justify-content:center}
 .dim{color:var(--dim)}
-#game{display:none;padding:6px;height:100svh;max-width:980px;margin:0 auto;gap:6px}
+#game{display:none;padding:calc(6px + env(safe-area-inset-top,0px)) calc(6px + env(safe-area-inset-right,0px)) calc(6px + env(safe-area-inset-bottom,0px)) calc(6px + env(safe-area-inset-left,0px));height:100svh;max-width:980px;margin:0 auto;gap:6px}
 .top{display:flex;align-items:center;justify-content:space-between;gap:6px}
 .chip{padding:4px 8px;border-radius:999px;background:#111923;border:1px solid #1f2c3b;color:#cfe4ff;font-size:11px}
 #viewport,#fullMap{
@@ -52,17 +54,34 @@ html, body { margin:0; background:#0b0d10; color:var(--fg);
 }
 /* トースト（ログ）：少し大きく＆上から下げる＋フェード */
 #toast{
-  position:fixed;inset:0;pointer-events:none;
-  display:flex;flex-direction:column;align-items:center;gap:8px;
-  padding-top:12vh; /* ↓ 少し下げる */
+  position:fixed;
+  top:calc(env(safe-area-inset-top,0px) + 10px);
+  right:calc(env(safe-area-inset-right,0px) + 10px);
+  left:auto; bottom:auto;
+  width:min(33vw, 280px);
+  max-height:calc(100svh - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px) - 20px);
+  overflow:hidden;
+  pointer-events:none;
+  display:flex;
+  flex-direction:column;
+  align-items:stretch;
+  gap:6px;
   z-index:80;
 }
 .toast{
-  background:rgba(8,12,16,.78);color:#fff;border:1px solid rgba(255,255,255,.12);
-  padding:10px 12px;border-radius:12px;font-size:16px;
+  background:rgba(20,26,34,.55);
+  color:#e9eef3;
+  border:1px solid rgba(80,110,140,.35);
+  padding:8px 10px;
+  border-radius:10px;
+  font-size:12px;
+  line-height:1.15;
+  word-break:break-word;
   backdrop-filter:blur(6px);
-  box-shadow:0 8px 24px rgba(0,0,0,.35);
-  transform:translateY(0);opacity:1;
+  -webkit-backdrop-filter:blur(6px);
+  box-shadow:0 6px 18px rgba(0,0,0,.28);
+  transform:translateY(0);
+  opacity:1;
   transition:opacity .28s ease, transform .28s ease;
 }
 .toast.toast-green{ color:var(--green); border-color:rgba(140,255,210,.3); }
@@ -165,7 +184,189 @@ button, .pad, .act, .btn { touch-action: manipulation; }
   30%{ opacity:.95 }
   100%{ opacity:0; transform:scale(1.08) }
 }
+
+/* ==== Colored ASCII cells ==== */
+/* ==== Town mode colors ==== */
+.town-grass{color:#8bffc9}
+.town-road{color:#ffe08a}
+.town-flower{color:#ff9de6}
+.town-tree{color:#74b8ff}
+.town-water{color:#78e3ff}
+.town-building{color:#cfe4ff}
+.mon-town{color:#b36bff}
+
+#viewport { font-variant-ligatures: none; }
+.cell{display:inline-block; width:1ch; height:1em;}
+.wall{color:#808080}
+.wall-shop{color:#6db6ff}   /* 青 */
+.wall-mh{color:#ff6d6d}     /* 赤 */
+.player{color:#79ffb5}      /* プレイヤー */
+.mon-enemy{color:#ff4d4d}   /* 敵 */
+.mon-shop{color:#b36bff}    /* 店主 */
+.item{color:#74b8ff}        /* アイテム */
+.gold{color:#ffd94d}        /* ゴールド */
+.stair{color:#5bff6d}       /* 階段 */
+.dimFog{color:#3a4657}
+
+
+/* ===== マップ描画（span cell） ===== */
+#viewport{ white-space:normal; line-height:1em; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; letter-spacing:0; }
+#viewport .cell{ display:inline-block; width:1ch; height:1em; text-align:center; vertical-align:top; }
+#viewport br{ line-height:1em; }
+#viewport .map-item{ color:#d9e5ff; }
+#viewport .map-gold{ color:#ffe08a; }
+/* 既存の .item（所持品カード）と衝突しない */
+
+/* ===== 攻撃FX ===== */
+#viewport .fx-src{ background:rgba(0,255,140,.35); border-radius:4px; }
+#viewport .fx-dst{ background:rgba(255,80,80,.35); border-radius:4px; }
+#viewport .fx-line{ background:rgba(255,220,90,.22); border-radius:4px; }
+
+/* ===== トースト：少し透過＆邪魔にならない左上 ===== */
+#toast{
+  position:fixed;
+  top:calc(env(safe-area-inset-top,0px) + 10px);
+  right:calc(env(safe-area-inset-right,0px) + 10px);
+  left:auto; bottom:auto;
+  width:min(33vw, 280px);
+  max-height:calc(100svh - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px) - 20px);
+  overflow:hidden;
+  pointer-events:none;
+  display:flex;
+  flex-direction:column;
+  align-items:stretch;
+  gap:6px;
+  z-index:80;
+}
+.toast{
+  background:rgba(20,26,34,.55);
+  color:#e9eef3;
+  border:1px solid rgba(80,110,140,.35);
+  padding:8px 10px;
+  border-radius:10px;
+  font-size:12px;
+  line-height:1.15;
+  word-break:break-word;
+  backdrop-filter:blur(6px);
+  -webkit-backdrop-filter:blur(6px);
+  box-shadow:0 6px 18px rgba(0,0,0,.28);
+  transform:translateY(0);
+  opacity:1;
+  transition:opacity .28s ease, transform .28s ease;
+}
+
+/* ===== 射撃オーバーレイ ===== */
+#shootOL.overlay{
+  position:fixed; inset:0;
+  background:rgba(0,0,0,.45);
+  display:flex; align-items:center; justify-content:center;
+  z-index:50;
+}
+.shootPanel{ width:min(320px, 92vw); }
+.shootGrid{
+  display:grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap:8px;
+  margin-top:10px;
+}
+.shootGrid .btn{
+  height:44px;
+  font-size:18px;
+}
+
+
+/* --- Town Minesweeper --- */
+.btn.sel{border-color:var(--hl); box-shadow:0 0 0 1px rgba(120,227,255,0.22) inset;}
+.msGrid{
+  display:grid;
+  gap:8px;
+  justify-content:center;
+  align-content:center;
+  margin-top:10px;
+}
+/* マインスイーパー：未開封＝浮いてるガラス、開封＝沈んだ石板（分かりやすさ最優先＋透明感） */
+.msCell{
+  position:relative;
+  overflow:hidden;
+  width:32px;
+  height:32px;
+  border-radius:11px;
+  border:1px solid rgba(160,190,220,.14);
+  background:
+    radial-gradient(140% 140% at 25% 20%, rgba(255,255,255,.08), rgba(255,255,255,0) 55%),
+    linear-gradient(180deg, rgba(22,30,40,.85), rgba(12,16,22,.85));
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  font-size:14px;
+  user-select:none;
+  box-shadow:
+    0 10px 18px rgba(0,0,0,.38),
+    inset 0 1px 0 rgba(255,255,255,.10),
+    inset 0 -1px 0 rgba(0,0,0,.45);
+  transition: transform .12s ease, filter .12s ease, background .18s ease, box-shadow .18s ease;
+}
+.msCell::before{
+  content:"";
+  position:absolute;
+  inset:-2px;
+  background:
+    radial-gradient(90% 70% at 20% 12%, rgba(255,255,255,.18), rgba(255,255,255,0) 60%),
+    linear-gradient(135deg, rgba(255,255,255,.08), rgba(255,255,255,0) 55%);
+  opacity:.85;
+  pointer-events:none;
+  mix-blend-mode:screen;
+}
+.msCell::after{
+  content:"";
+  position:absolute;
+  inset:0;
+  background:linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,0) 55%);
+  opacity:.75;
+  pointer-events:none;
+}
+.msCell:active{ transform:translateY(1px) scale(.99); filter:brightness(1.05); }
+
+.msCell.revealed{
+  border-color:rgba(180,210,245,.18);
+  background:
+    radial-gradient(120% 120% at 30% 25%, rgba(255,255,255,.06), rgba(255,255,255,0) 55%),
+    linear-gradient(180deg, rgba(44,58,78,.40), rgba(18,22,28,.55));
+  box-shadow:
+    0 6px 12px rgba(0,0,0,.22),
+    inset 0 2px 10px rgba(0,0,0,.55);
+}
+.msCell.revealed::before{ opacity:.35; }
+.msCell.revealed::after{ opacity:.30; }
+
+.msCell.flag{
+  background:
+    radial-gradient(140% 140% at 25% 20%, rgba(120,227,255,.22), rgba(120,227,255,0) 60%),
+    linear-gradient(180deg, rgba(20,34,44,.90), rgba(10,14,18,.90));
+  border-color:rgba(120,227,255,.30);
+}
+.msCell.bomb{
+  background:
+    radial-gradient(140% 140% at 25% 20%, rgba(255,80,80,.20), rgba(255,80,80,0) 60%),
+    linear-gradient(180deg, rgba(28,18,22,.92), rgba(10,10,12,.92));
+  border-color:rgba(255,80,80,.30);
+}
+
+/* 数字は暗背景で読みやすい配色（白/黄/水色系） */
+.msCell.n1{color:#78e3ff; text-shadow:0 1px 0 rgba(0,0,0,.65);}
+.msCell.n2{color:#8bffc9; text-shadow:0 1px 0 rgba(0,0,0,.65);}
+.msCell.n3{color:#ffdb9d; text-shadow:0 1px 0 rgba(0,0,0,.65);}
+.msCell.n4{color:#ff9de6; text-shadow:0 1px 0 rgba(0,0,0,.65);}
+.msCell.n5{color:#ffd27a; text-shadow:0 1px 0 rgba(0,0,0,.70);}
+.msCell.n6{color:#cfe4ff; text-shadow:0 1px 0 rgba(0,0,0,.72);}
+.msCell.n7{color:#e9eef3; text-shadow:0 1px 0 rgba(0,0,0,.75);}
+.msCell.n8{color:#b8c7d8; text-shadow:0 1px 0 rgba(0,0,0,.75);}
+
+/* 盤面の周囲を軽く整える */
+.msWrap{ margin-top:10px; }
+
 </style>
+
 </head>
 <body>
 <div id="lowHP"></div>
@@ -178,6 +379,8 @@ button, .pad, .act, .btn { touch-action: manipulation; }
 <div class="dim" id="bestInfo" style="margin:6px 0 10px">過去の最高到達: - / スコア: -</div>
 <div class="row">
 <div class="btn" id="btnNew">新しく始める</div>
+<div class="btn" id="btnTown">町に行く</div>
+<div class="btn" id="btnMiniGames">ミニゲーム</div>
 <div class="btn" id="btnLocal">ローカルセーブから続き</div>
 <div class="btn" id="btnCode">テキストセーブから続き</div>
 </div>
@@ -256,6 +459,21 @@ button, .pad, .act, .btn { touch-action: manipulation; }
 <div class="row" style="justify-content:flex-end;margin-top:10px"><div class="btn" id="btnCloseMenu">閉じる</div></div>
 </div>
 </div>
+
+<!-- 町UI -->
+<div class="overlay" id="townOL">
+  <div class="modal">
+    <div class="row" style="justify-content:space-between;align-items:center">
+      <div class="dim" id="townTitle">町</div>
+      <div class="btn" id="btnCloseTownOL">閉じる</div>
+    </div>
+    <div class="dim" id="townDesc" style="margin-top:6px"></div>
+    <div class="row" id="townTabs" style="margin-top:8px;gap:8px;flex-wrap:wrap"></div>
+    <div class="list" id="townList" style="margin-top:8px"></div>
+    <div class="row" id="townActions" style="margin-top:10px;gap:8px;flex-wrap:wrap;justify-content:flex-end"></div>
+  </div>
+</div>
+
 <!-- 壺 -->
 <div class="overlay" id="potOL">
 <div class="modal">
@@ -290,7 +508,7 @@ button, .pad, .act, .btn { touch-action: manipulation; }
 <!-- 会計ダイアログ（ショップ） -->
 <div id="shopDialog" class="overlay" style="display:none">
   <div class="modal">
-    <div style="font-weight:700;margin-bottom:6px">お会計</div>
+    <div id="shopDialogTitle" style="font-weight:700;margin-bottom:6px">お会計</div>
     <div id="shopDialogText" class="dim" style="margin-bottom:10px">
       未払いアイテムの一覧と合計を表示します…
     </div>
@@ -302,6 +520,25 @@ button, .pad, .act, .btn { touch-action: manipulation; }
         <div class="btn" id="btnPay">支払う</div>
       </div>
     </div>
+  </div>
+</div>
+
+
+<div id="shootOL" class="overlay" style="display:none;">
+  <div class="panel shootPanel">
+    <div class="title" id="shootTitle">方向を選んで射撃</div>
+    <div class="shootGrid">
+      <button class="btn" data-dir="1" data-dx="-1" data-dy="-1">↖</button>
+      <button class="btn" data-dir="2" data-dx="0" data-dy="-1">↑</button>
+      <button class="btn" data-dir="3" data-dx="1" data-dy="-1">↗</button>
+      <button class="btn" data-dir="4" data-dx="-1" data-dy="0">←</button>
+      <button id="shootCancel" class="btn">×</button>
+      <button class="btn" data-dir="6" data-dx="1" data-dy="0">→</button>
+      <button class="btn" data-dir="7" data-dx="-1" data-dy="1">↙</button>
+      <button class="btn" data-dir="8" data-dx="0" data-dy="1">↓</button>
+      <button class="btn" data-dir="9" data-dx="1" data-dy="1">↘</button>
+    </div>
+    <div class="dim" style="margin-top:6px;font-size:12px;">×でキャンセル</div>
   </div>
 </div>
 

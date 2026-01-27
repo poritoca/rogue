@@ -14,6 +14,58 @@ function refillArrowMsg(cnt){
 }
 
 
+// === Arrow helpers ===
+function arrowDef(kind){
+  return (typeof ARROWS!=='undefined' && ARROWS.find(a=>a.kind===kind)) || {name:`${kind}矢束`, type:'arrow', dmg:5, count:0, kind};
+}
+function findArrowStack(g, kind){
+  return g.inv && g.inv.find && g.inv.find(x=>x && x.type==='arrow' && x.kind===kind) || null;
+};
+function handleArrowPickup(g, it){
+  if(!it || it.type!=='arrow') return false;
+
+  const kind = it.kind;
+  const dmg  = (typeof num==='function') ? num(it.dmg,5) : (it.dmg||5);
+  const cnt  = (typeof num==='function') ? num(it.count,0) : (it.count||0);
+
+  const loadedKind = (g.p && g.p.arrow && g.p.arrow.kind) ? g.p.arrow.kind : null;
+
+  // 同じ種類を「装填中」なら、所持本数(p.ar)へ補充
+  if(loadedKind && loadedKind === kind){
+    g.p.ar = (typeof num==='function' ? num(g.p.ar,0) : (g.p.ar||0)) + cnt;
+    if(typeof g.msg==='function') g.msg(`${it.name}を補充${cnt?`（+${cnt}）`:''}`);
+    if(typeof fxSpark==='function') fxSpark();
+    g.items = g.items.filter(x=>x!==it);
+    return true;
+  }
+
+  // それ以外（未装填／別種類）は所持品へ追加（同種はスタック）
+  const stack = (typeof findArrowStack==='function') ? findArrowStack(g, kind) : null;
+  if(stack){
+    const prev = (typeof num==='function') ? num(stack.count,0) : (stack.count||0);
+    stack.count = prev + cnt;
+    // 念のため威力・名前を補正
+    stack.dmg = (typeof num==='function') ? Math.max(num(stack.dmg,0), dmg) : Math.max(stack.dmg||0, dmg);
+    if(!stack.name) stack.name = it.name;
+    if(typeof g.msg==='function') g.msg(`${it.name}を拾った（所持品の同種に+${cnt}）`);
+    if(typeof fxSpark==='function') fxSpark();
+    g.items = g.items.filter(x=>x!==it);
+    return true;
+  }
+
+  if(g.inv.length>=g.baseInvMax()){
+    if(typeof g.msg==='function') g.msg("これ以上持てない");
+    return true; // ここで床から消さない（true返しの仕様があるなら注意）
+  }
+
+  const picked = {name:it.name, type:'arrow', kind, dmg, count:cnt, ided:it.ided};
+  g.inv.push(picked);
+  if(typeof g.msg==='function') g.msg(`${it.name}を拾った（所持品へ）`);
+  if(typeof fxSpark==='function') fxSpark();
+  g.items = g.items.filter(x=>x!==it);
+  return true;
+};
+
 /*** 端末ズーム抑止 ***/
 document.addEventListener('gesturestart', e => { e.preventDefault(); }, {passive:false});
 let __lastTouchEnd = 0;
@@ -26,13 +78,33 @@ window.addEventListener('touchmove', (e)=>{ if(e.target.closest('#viewport, .pad
 
 /*** ユーティリティ ***/
 const $=q=>document.querySelector(q);
-function bindTap(sel, fn){ document.querySelectorAll(sel).forEach(el=>{ let f=false; const h=e=>{if(f)return; f=true; e.preventDefault(); fn(e,el); setTimeout(()=>f=false,0);}; el.addEventListener('touchstart',h,{passive:false}); el.addEventListener('click',h,{passive:false}); }); }
+function bindTap(sel, fn){
+  let els = [];
+  if(typeof sel === 'string'){
+    els = Array.from(document.querySelectorAll(sel));
+  }else if(sel instanceof Element){
+    els = [sel];
+  }else if(sel && typeof sel.length === 'number'){
+    els = Array.from(sel);
+  }
+  els.forEach(el=>{
+    const h=(e)=>{ e.preventDefault(); fn(e); };
+    el.addEventListener('touchstart',h,{passive:false});
+    el.addEventListener('click',h,{passive:false});
+  });
+}
 const rand=(a,b)=>Math.floor(Math.random()*(b-a+1))+a;
 const choice=a=>a[Math.floor(Math.random()*a.length)];
 const clamp=(n,a,b)=>Math.max(a,Math.min(b,n));
 function toast(m, cls=""){
   const layer=$("#toast"); const d=document.createElement('div');
   d.className='toast' + (cls?(' '+cls):''); d.textContent=m; layer.appendChild(d);
+
+  // iPhoneの狭い画面でも詰まりにくいように、表示数を上限化（古いものから間引く）
+  while(layer.children && layer.children.length>6){
+    layer.removeChild(layer.firstChild);
+  }
+
   setTimeout(()=>{ d.style.opacity='0'; d.style.transform='translateY(-8px)'; setTimeout(()=>d.remove(),280); },2200);
 }
 // 数値ガード
@@ -59,6 +131,16 @@ function fxOmin(){ const fx=$("#fx"); const d=document.createElement('div'); d.c
 
 /*** ここから PART 2 へ続く ***/
 /*** 定数・パラメータ ***/
+
+// ===== Town mode (町) =====
+const DUNGEON_W = 56;
+const DUNGEON_H = 30;
+const TOWN_W = 160;
+const TOWN_H = 80;
+
+const LS_TOWN_HOLD = 'townHold_v1';
+const LS_TOWN_STORAGE = 'townStorage_v1';
+const LS_TOWN_LOSTFOUND = 'townLostFound_v1';
 const VIEW_W=23, VIEW_H=11; 
 const MAX_FLOOR=999; 
 const INV_BASE_MAX=30;           // 所持上限30
@@ -113,7 +195,7 @@ const HERBS=[
   {name:"毒草",type:"herb",effect:(g,t)=>{ if(t===g.p){ g.p.str=Math.max(1, num(g.p.str,10)-1); g.msg("力が下がった…"); }else{ t.atk=Math.max(1, num(t.atk,1)-1); g.msg(`${t.name}は弱くなった`);} }},
   {name:"ちから草",type:"herb",effect:(g,t)=>{ if(t===g.p){ g.p.str=num(g.p.str,10)+1; g.msg("力が上がった！"); fxSpark(); }else{ t.atk=num(t.atk,1)+1; g.msg(`${t.name}は少し強くなった`);} }},
   {name:"眠り草",type:"herb",effect:(g,t)=>{ t.sleep=3; g.msg((t===g.p?"眠気が…":"眠った！")); }},
-  {name:"無敵草",type:"herb",effect:(g,t)=>{ if(t===g.p){ g.p.invincible=Math.max(1,num(g.p.invincible,0))+5; g.msg("しばらく無敵！"); fxSpark(); }}},
+  {name:"無敵草",type:"herb",effect:(g,t)=>{ if(t===g.p){ g.p.invincible=Math.max(0,num(g.p.invincible,0))+5; g.msg("しばらく無敵！"); fxSpark(); }}},
   {name:"復活草",type:"herb",revive:true,effect:()=>{}},
   // ★ 身代わり草：方向指定で当たったモンスターをデコイ化
   {name:"身代わり草",type:"herb",effect:(g)=>{ g.msg("身代わりにしたい方向を選んでください"); g.waitTarget={mode:'herbDecoy'}; }}
@@ -121,7 +203,7 @@ const HERBS=[
 
 const SCROLLS=[
   {name:"識別の巻物",type:"scroll",effect:(g)=>{const u=g.inv.filter(it=>!it.ided); if(!u.length){g.msg("識別する物がない");return;} g.waitId=true; g.msg("識別するアイテムを選択");}},
-  {name:"脱出の巻物",type:"scroll",effect:(g)=>{g.win("脱出成功！");}},
+  {name:"脱出の巻物",type:"scroll",effect:(g)=>{g.escapeToTitle("脱出成功！");}},
   {name:"天の恵み(武器強化)",type:"scroll",effect:(g)=>{ if(!g.p.wep){g.msg("武器がない");return;} const big=Math.random()<0.10; const up=big?3:1; g.p.wep.plus=num(g.p.wep.plus,0)+up; g.msg(`${g.p.wep.name}+${num(g.p.wep.plus,0)}${big?"（会心強化！）":""}`); g.flashInv(it=>it===g.p.wep); fxSpark(); } },
   {name:"地の恵み(盾強化)",type:"scroll",effect:(g)=>{ if(!g.p.arm){g.msg("盾がない");return;} const big=Math.random()<0.10; const up=big?3:1; g.p.arm.plus=num(g.p.arm.plus,0)+up; g.msg(`${g.p.arm.name}+${num(g.p.arm.plus,0)}${big?"（会心強化！）":""}`); g.flashInv(it=>it===g.p.arm); fxSpark(); } },
   {name:"大部屋の巻物",type:"scroll",effect:(g)=>{g.makeBigRoom();g.msg("大部屋になった！"); fxOmin(); }},
@@ -278,14 +360,21 @@ function scaleMon(def,x,y,lv){
 /*** Game クラス ***/
 class Game{
   constructor(){
-    this.w=56; this.h=30;
+    this.w=DUNGEON_W; this.h=DUNGEON_H;
     this.map=[]; this.vis=[]; this.rooms=[]; this.nearStairs=new Set();
     this.items=[]; this.mons=[]; this.traps=[];
     this.turn=0; this.bestFloor=parseInt(localStorage.getItem('bestF')||'0',10);
     this.bestScore=parseInt(localStorage.getItem('bestScore')||'0',10);
-    this.shopCells=new Set(); this.mhRoomIds=new Set();
+    this.shopCells=new Set(); this.shopRooms=new Set(); this.shopExits=new Map(); this.thief=false; this.shopDialogState=null; this._resumeAfterShopDialog=null; this.mhRoomIds=new Set(); this.shopWall=new Set(); this.mhWall=new Set();
     this.autoPickup=localStorage.getItem('autoPickup')!=='OFF';
     this.invTabbed = (localStorage.getItem('invTabbed')==='ON');
+
+    this.mode='dungeon';
+    this.townStorage=[];
+    this.townLostFound=[];
+    this.townShopStock=[];
+    this.townShopLastGen=0;
+    this.loadTownPersistent();
 
     this.p={
       x:0,y:0,
@@ -298,11 +387,250 @@ class Game{
     this.viewW=VIEW_W; this.viewH=VIEW_H;
     this.haveEscape=false;
   }
+
+  // ===== Town persistent / hold (localStorage) =====
+  loadTownPersistent(){
+    // townStorage / townLostFound は「シリアライズ済みアイテム配列」を保持する
+    try{
+      const a = JSON.parse(localStorage.getItem(LS_TOWN_STORAGE) || '[]');
+      this.townStorage = Array.isArray(a) ? a : [];
+    }catch(e){ this.townStorage=[]; }
+    try{
+      const a = JSON.parse(localStorage.getItem(LS_TOWN_LOSTFOUND) || '[]');
+      this.townLostFound = Array.isArray(a) ? a : [];
+    }catch(e){ this.townLostFound=[]; }
+  }
+  saveTownPersistent(){
+    try{ localStorage.setItem(LS_TOWN_STORAGE, JSON.stringify(this.townStorage||[])); }catch(e){}
+    try{ localStorage.setItem(LS_TOWN_LOSTFOUND, JSON.stringify(this.townLostFound||[])); }catch(e){}
+  }
+
+  saveHoldToTitle(){
+    // 脱出・町→タイトルなどで「所持品/お金/レベル等」を保持してタイトルへ戻すための保存
+    const hold = {
+      v: 1,
+      t: Date.now(),
+      p: {
+        hp: num(this.p.hp,1), maxHp: num(this.p.maxHp,1),
+        str: num(this.p.str,10),
+        baseAtk: num(this.p.baseAtk,5),
+        baseDef: num(this.p.baseDef,1),
+        lv: num(this.p.lv,1),
+        xp: num(this.p.xp,0),
+        gold: num(this.p.gold,0),
+        // 矢（装填状態）
+        arrowKind: (this.p.arrow && this.p.arrow.kind) ? this.p.arrow.kind : null,
+        ar: num(this.p.ar,0),
+        // 装備（返還タグ等の状態も含める）
+        wep: this.p.wep ? Game._serializeItem(this.p.wep) : null,
+        arm: this.p.arm ? Game._serializeItem(this.p.arm) : null
+      },
+      inv: (this.inv||[]).map(it=>Game._serializeItem(it)).filter(Boolean)
+    };
+    try{ localStorage.setItem(LS_TOWN_HOLD, JSON.stringify(hold)); }catch(e){}
+  }
+  loadHoldFromTitle(){
+    // タイトル保持状態があれば復元（無ければ何もしない）
+    let hold=null;
+    try{ hold = JSON.parse(localStorage.getItem(LS_TOWN_HOLD) || 'null'); }catch(e){ hold=null; }
+    if(!hold || !hold.p) return;
+
+    // player core
+    this.p.hp = num(hold.p.hp, this.p.hp);
+    this.p.maxHp = num(hold.p.maxHp, this.p.maxHp);
+    this.p.str = num(hold.p.str, this.p.str);
+    this.p.baseAtk = num(hold.p.baseAtk, this.p.baseAtk);
+    this.p.baseDef = num(hold.p.baseDef, this.p.baseDef);
+    this.p.lv = num(hold.p.lv, this.p.lv);
+    this.p.xp = num(hold.p.xp, this.p.xp);
+    this.p.gold = num(hold.p.gold, this.p.gold);
+
+    // equip
+    this.p.wep = hold.p.wep ? Game._deserializeItem(hold.p.wep) : null;
+    this.p.arm = hold.p.arm ? Game._deserializeItem(hold.p.arm) : null;
+
+    // arrows loaded
+    const ak = hold.p.arrowKind || null;
+    this.p.arrow = ak ? clone(arrowDef(ak)) : null;
+    this.p.ar = num(hold.p.ar, 0);
+
+    // inventory
+    this.inv = Array.isArray(hold.inv) ? hold.inv.map(o=>Game._deserializeItem(o)).filter(Boolean) : [];
+  }
+
+  // ---- item serialization helpers (functions cannot be JSON'd) ----
+  static _serializeItem(it){
+    if(!it || typeof it !== 'object') return null;
+    const o = { type: it.type, name: it.name };
+    if(it.type==='weapon'){
+      o.plus = num(it.plus,0); o.ided = !!it.ided; o.returnTag = !!it.returnTag;
+      o.atk = num(it.atk,0);
+    }else if(it.type==='armor'){
+      o.plus = num(it.plus,0); o.ided = !!it.ided; o.returnTag = !!it.returnTag;
+      o.def = num(it.def,0);
+    }else if(it.type==='wand'){
+      o.uses = num(it.uses,0); o.ided = !!it.ided;
+    }else if(it.type==='arrow'){
+      o.kind = it.kind || 'normal';
+      o.count = num(it.count,0);
+      o.dmg = num(it.dmg,0);
+      o.ided = !!it.ided;
+    }else if(it.type==='pot' || it.type==='potBomb'){
+      o.cap = num(it.cap,0);
+      if(Array.isArray(it.contents)) o.contents = it.contents.map(x=>Game._serializeItem(x)).filter(Boolean);
+    }else if(it.type==='gold'){
+      o.amt = num(it.amt,0);
+    }else{
+      o.ided = !!it.ided;
+    }
+    return o;
+  }
+  static _deserializeItem(o){
+    if(!o || typeof o !== 'object') return null;
+    const t = Game._templateItem(o.type, o.name, o.kind);
+    if(!t) return null;
+    if(o.type==='weapon'){
+      t.plus = num(o.plus,0);
+      t.ided = !!o.ided;
+      t.returnTag = !!o.returnTag;
+      if('atk' in o) t.atk = num(o.atk, t.atk);
+    }else if(o.type==='armor'){
+      t.plus = num(o.plus,0);
+      t.ided = !!o.ided;
+      t.returnTag = !!o.returnTag;
+      if('def' in o) t.def = num(o.def, t.def);
+    }else if(o.type==='wand'){
+      t.uses = num(o.uses, t.uses);
+      t.ided = !!o.ided;
+    }else if(o.type==='arrow'){
+      t.kind = o.kind || t.kind || 'normal';
+      t.count = num(o.count, t.count);
+      t.dmg = num(o.dmg, t.dmg);
+      t.ided = !!o.ided;
+    }else if(o.type==='pot' || o.type==='potBomb'){
+      t.cap = num(o.cap, t.cap);
+      if(Array.isArray(o.contents)) t.contents = o.contents.map(x=>Game._deserializeItem(x)).filter(Boolean);
+    }else if(o.type==='gold'){
+      t.amt = num(o.amt, t.amt);
+    }else{
+      t.ided = !!o.ided;
+    }
+    return t;
+  }
+  static _templateItem(type, name, kind){
+    try{
+      if(type==='weapon'){
+        const base = WEAPONS.find(x=>x.name===name) || {name:name||'武器', atk:2};
+        return Object.assign({type:'weapon', plus:0, ided:false, returnTag:false}, clone(base), {type:'weapon'});
+      }
+      if(type==='armor'){
+        const base = ARMORS.find(x=>x.name===name) || {name:name||'盾', def:1};
+        return Object.assign({type:'armor', plus:0, ided:false, returnTag:false}, clone(base), {type:'armor'});
+      }
+      if(type==='herb'){
+        const base = HERBS.find(x=>x.name===name) || {name:name||'草', type:'herb', effect:()=>{}};
+        return clone(base);
+      }
+      if(type==='scroll'){
+        const base = SCROLLS.find(x=>x.name===name) || {name:name||'巻物', type:'scroll', effect:()=>{}};
+        return clone(base);
+      }
+      if(type==='wand'){
+        const base = WANDS.find(x=>x.name===name) || {name:name||'杖', type:'wand', uses:0, cast:()=>{}};
+        return clone(base);
+      }
+      if(type==='arrow'){
+        if(kind){
+          const base = ARROWS.find(x=>x.kind===kind) || ARROWS.find(x=>x.name===name) || {name:(name||'矢束'), type:'arrow', kind:kind, count:0, dmg:5};
+          return Object.assign({}, clone(base), {type:'arrow', kind:(base.kind||kind)});
+        }
+        const base = ARROWS.find(x=>x.name===name) || {name:(name||'矢束'), type:'arrow', kind:'normal', count:0, dmg:5};
+        return Object.assign({}, clone(base), {type:'arrow', kind:(base.kind||'normal')});
+      }
+      if(type==='pot' || type==='potBomb'){
+        const base = POTS.find(x=>x.name===name) || {name:name||'壺', type:type, cap:1};
+        return Object.assign({}, clone(base), {type:type});
+      }
+      if(type==='gold'){
+        return {name:'ゴールド', type:'gold', amt:0};
+      }
+      return {name:name||'?', type:type||'misc'};
+    }catch(e){
+      return null;
+    }
+  }
   // ラッパ（Game内から呼べるように）
   fxSlash(){ fxSlash(); } fxSpark(){ fxSpark(); } fxOmin(){ fxOmin(); }
 
   msg(s){ toast(s); }
   msgGreen(s){ toast(s,"toast-green"); }
+
+  // ===== 攻撃FX（誰→誰を視覚化） =====
+  cellAt(ax, ay){
+    const vx = ax - this.offX;
+    const vy = ay - this.offY;
+    if(vx<0 || vy<0 || vx>=this.viewW || vy>=this.viewH) return null;
+    const idx = vy*this.viewW + vx;
+    return (this._cellEls && this._cellEls[idx]) ? this._cellEls[idx] : null;
+  }
+
+  enqueueAttackFx(src, dst, msgText, linePts){
+    if(!this.fxQueue) this.fxQueue=[];
+    if(!this._fxSeen) this._fxSeen=new Set();
+
+    const sx=src?src.x:null, sy=src?src.y:null, dx=dst?dst.x:null, dy=dst?dst.y:null;
+    const sig = `${this.turn}|${sx},${sy}->${dx},${dy}|${msgText||''}`;
+    // 同一ターン内の完全重複を除外（2巡バグ対策）
+    if(this._fxSeen.has(sig)) return;
+    this._fxSeen.add(sig);
+
+    this.fxQueue.push({src,dst,msgText,linePts});
+  }
+
+  playFxQueue(){
+    if(this.fxBusy) return;
+    if(!this.fxQueue || !this.fxQueue.length) return;
+    this.fxBusy=true;
+
+    const dur=320, gap=240;
+
+    const step=()=>{
+      if(!this.fxQueue.length){
+        this.fxBusy=false;
+        // ターンが進んだら重複除外セットをクリア（溜まり続けないように）
+        if(this._fxSeen && this._fxSeen.size>300) this._fxSeen.clear();
+        return;
+      }
+      const ev=this.fxQueue.shift();
+      // 表示する直前に最新のセル参照を確保
+      if(!this._cellEls || !this._cellEls.length) this.render();
+
+      const srcEl = ev.src ? this.cellAt(ev.src.x, ev.src.y) : null;
+      const dstEl = ev.dst ? this.cellAt(ev.dst.x, ev.dst.y) : null;
+      const lineEls = [];
+      if(ev.linePts && ev.linePts.length){
+        for(const p of ev.linePts){
+          const e=this.cellAt(p.x,p.y);
+          if(e) lineEls.push(e);
+        }
+      }
+
+      if(srcEl) srcEl.classList.add('fx-src');
+      if(dstEl) dstEl.classList.add('fx-dst');
+      lineEls.forEach(e=>e.classList.add('fx-line'));
+
+      if(ev.msgText) toast(ev.msgText, 'toast-dmg');
+
+      setTimeout(()=>{
+        if(srcEl) srcEl.classList.remove('fx-src');
+        if(dstEl) dstEl.classList.remove('fx-dst');
+        lineEls.forEach(e=>e.classList.remove('fx-line'));
+        setTimeout(step, gap);
+      }, dur);
+    };
+
+    step();
+  }
 
   isOut(x,y){ return x<0||y<0||x>=this.w||y>=this.h; }
   isWall(x,y){ return this.map[y][x]==='#'; }
@@ -317,7 +645,7 @@ class Game{
   gen(floor=1){
     this.map=Array.from({length:this.h},()=>Array(this.w).fill('#'));
     this.vis=Array.from({length:this.h},()=>Array(this.w).fill(false));
-    this.rooms=[]; this.items=[]; this.mons=[]; this.traps=[]; this.shopCells.clear(); this.mhRoomIds.clear(); this.nearStairs.clear();
+    this.rooms=[]; this.items=[]; this.mons=[]; this.traps=[]; this.shopCells.clear(); this.mhRoomIds.clear(); this.nearStairs.clear(); this.shopCells.clear(); this.shopRooms.clear(); this.shopExits.clear(); this.shopWall.clear(); this.mhWall.clear();
 
     const R=rand(7,11);
     for(let i=0;i<R;i++){
@@ -340,12 +668,26 @@ class Game{
 
     this.ensureConnectivity(this.p.x,this.p.y);
 
+    // --- ショップ生成：1フロアあたり「だいたい2つ」 ---
+    const startRoomId = this.roomIdAt(this.p.x,this.p.y);
+    const eligibleShopRooms = this.rooms.filter(r=>{
+      if(r.id===startRoomId) return false;
+      return (r.w>=6 && r.h>=6);
+    });
+    for(let i=eligibleShopRooms.length-1;i>0;i--){
+      const j=rand(0,i);
+      const tmp=eligibleShopRooms[i]; eligibleShopRooms[i]=eligibleShopRooms[j]; eligibleShopRooms[j]=tmp;
+    }
+    const targetShopCount = Math.min(2, eligibleShopRooms.length);
+    const shopRoomIds = new Set(eligibleShopRooms.slice(0,targetShopCount).map(r=>r.id));
+    this.shopRooms.clear(); for(const id of shopRoomIds){ this.shopRooms.add(id); }
+
     for(const r of this.rooms){
-      const isStart=(this.p.x>=r.x&&this.p.x<r.x+r.w&&this.p.y>=r.y&&this.p.y<r.y+r.h);
-      let isShop=Math.random()<0.04 && !isStart && r.w>=6 && r.h>=6;
+      const isStart=(r.id===startRoomId);
+      const isShop = shopRoomIds.has(r.id);
       let isMH=(Math.random()<0.08 && !isStart && r.w>=20 && r.h>=20);
       if(!isShop && !isMH && Math.random()<0.03 && r.w>=24 && r.h>=24) isMH=true;
-      if(isShop && isMH) (Math.random()<0.5)? isMH=false: isShop=false;
+      if(isShop) isMH=false;
       if(isShop) this.genShop(r);
       if(isMH){ this.genMH(r); this.mhRoomIds.add(r.id); }
       if(!isShop && !isMH){
@@ -370,7 +712,1082 @@ class Game{
     if(this.mons){ for(const m of this.mons){ if(m && m.ai==='shop' && m.hostile==null){ m.hostile=false; m.isShop=true; } } }
 this.render();
   }
+
+  // ===== Town generation =====
+  setWorldSize(kind){
+    if(kind==='town'){ this.w=TOWN_W; this.h=TOWN_H; }
+    else{ this.w=DUNGEON_W; this.h=DUNGEON_H; }
+    this.viewW=VIEW_W; this.viewH=VIEW_H;
+  }
+
+  genTown(){
+    this.mode='town';
+    this.setWorldSize('town');
+    this.map=Array.from({length:this.h},()=>Array(this.w).fill('.'));
+    this.vis=Array.from({length:this.h},()=>Array(this.w).fill(true));
+    this.rooms=[]; this.items=[]; this.mons=[]; this.traps=[];
+    this.shopCells.clear(); this.mhRoomIds.clear(); this.nearStairs.clear();
+    this.shopRooms.clear(); this.shopExits.clear(); this.shopWall.clear(); this.mhWall.clear();
+    // grass base, roads
+    const midX=Math.floor(this.w/2), midY=Math.floor(this.h/2);
+    const roadW=3;
+    for(let y=0;y<this.h;y++){
+      for(let dx=-roadW;dx<=roadW;dx++){
+        const x=midX+dx;
+        if(x>=0 && x<this.w) this.map[y][x]='=';
+      }
+    }
+    for(let x=0;x<this.w;x++){
+      for(let dy=-roadW;dy<=roadW;dy++){
+        const y=midY+dy;
+        if(y>=0 && y<this.h) this.map[y][x]='=';
+      }
+    }
+    // flowers / trees
+    for(let i=0;i<2200;i++){
+      const x=rand(1,this.w-2), y=rand(1,this.h-2);
+      if(this.map[y][x]!=='.') continue;
+      const r=Math.random();
+      if(r<0.55) this.map[y][x]='f';
+      else if(r<0.85) this.map[y][x]='T';
+      else this.map[y][x]='~';
+    }
+
+    // buildings (letters on the road)
+    const placeSign=(x,y,ch)=>{
+      for(let yy=y-1;yy<=y+1;yy++) for(let xx=x-2;xx<=x+2;xx++){
+        if(this.isOut(xx,yy)) continue;
+        this.map[yy][xx]='=';
+      }
+      if(!this.isOut(x,y)) this.map[y][x]=ch;
+    };
+    // 施設は「最初に見つけやすい」ように中央付近へ配置（巨大マップでも迷わない）
+    const fx = 12;
+    const fy = 6;
+    const bShop   = {x:midX-fx, y:midY-fy, ch:'S'}; // shop
+    const bStore  = {x:midX-fx, y:midY+fy, ch:'B'}; // bank/storage
+    const bTagger = {x:midX+fx, y:midY-fy, ch:'G'}; // tagger
+    const bCasino = {x:midX+fx, y:midY+fy, ch:'C'}; // casino
+    for(const b of [bShop,bStore,bTagger,bCasino]) placeSign(b.x,b.y,b.ch);
+
+    // multiple exits
+    const exits=[
+      {x:2,y:2},{x:this.w-3,y:2},{x:2,y:this.h-3},{x:this.w-3,y:this.h-3},
+      {x:midX,y:2},{x:midX,y:this.h-3},{x:2,y:midY},{x:this.w-3,y:midY}
+    ];
+    for(const e of exits){
+      this.map[e.y][e.x]='>';
+      for(let dy=-1;dy<=1;dy++) for(let dx=-1;dx<=1;dx++){
+        const nx=e.x+dx, ny=e.y+dy;
+        if(!this.isOut(nx,ny)) this.map[ny][nx]='=';
+      }
+    }
+
+    // player start
+    this.p.x=midX; this.p.y=midY; this.p._ox=this.p.x; this.p._oy=this.p.y;
+
+    // NPCs
+    // 建物のすぐ近くにNPCを置く（プレイヤー開始位置から徒歩数歩）
+    const npcs=[
+      {name:'商人',ch:'M',x:bShop.x,   y:bShop.y+2,   role:'shop'},
+      {name:'預かり屋',ch:'K',x:bStore.x,  y:bStore.y+2,  role:'storage'},
+      {name:'タグ職人',ch:'F',x:bTagger.x, y:bTagger.y+2, role:'tagger'},
+      {name:'カジノ係',ch:'Z',x:bCasino.x, y:bCasino.y+2, role:'casino'},
+    ];
+    for(const n of npcs){
+      this.mons.push({name:n.name,ch:n.ch,x:n.x,y:n.y,hp:9999,atk:0,def:0,xp:0,ai:'town',role:n.role});
+    }
+
+    this.msg("町に到着した。十字路周辺に施設があります（話すで利用）。端に出るか『出る』で町を出られます。");
+    this.render();
+  }
+
+  startDungeonFromTown(){
+    this.mode='dungeon';
+    this.setWorldSize('dungeon');
+    this.floor=1;
+    this.gen(1);
+  }
+
+  townTalk(){
+    // adjacent NPC
+    const dirs=[[-1,-1],[0,-1],[1,-1],[-1,0],[1,0],[-1,1],[0,1],[1,1]];
+    let npc=null;
+    for(const d of dirs){
+      const m=this.monAt(this.p.x+d[0], this.p.y+d[1]);
+      if(m && m.ai==='town'){ npc=m; break; }
+    }
+    if(!npc){
+      this.msg("近くに話せる相手がいない");
+      return;
+    }
+    this.openTownNpcMenu(npc);
+  }
+
+
+  // タイトル/町から確認できる共通ミニゲームハブ
+  openMiniGameHub(opts={}){
+    // opts.fromTitle: タイトルから開いた場合（説明を少し変える余地）
+    const npc = { role:'casino', name:'カジノ係' };
+    this.openTownNpcMenu(npc);
+  }
+
+  openTownNpcMenu(npc){
+    const close=()=>{ const ol=$("#townOL"); if(ol) ol.style.display='none'; };
+    const set=(title,desc)=>{ $("#townTitle").textContent=title||'町'; $("#townDesc").textContent=desc||''; };
+    const clear=()=>{ $("#townTabs").innerHTML=''; $("#townList").innerHTML=''; $("#townActions").innerHTML=''; };
+    const addAction=(label,fn)=>{ const b=document.createElement('div'); b.className='pill'; b.textContent=label; b.onclick=()=>fn(); $("#townActions").appendChild(b); };
+    const addTab=(label,fn)=>{ const b=document.createElement('div'); b.className='pill'; b.textContent=label; b.onclick=()=>fn(); $("#townTabs").appendChild(b); };
+    const show=()=>{ $("#townOL").style.display='flex'; };
+
+    clear();
+    if(npc.role==='shop'){
+      set("商人","売買できます（品揃えは入るたびに少し変化）");
+      const ensureStock=()=>{
+        const now=Date.now();
+        if(!this.townShopStock || !this.townShopStock.length || (now-this.townShopLastGen)>60*1000){
+          this.townShopLastGen=now;
+          const stock=[];
+          const pool=[...HERBS.map(x=>({...x})), ...SCROLLS.map(x=>({...x})), ...WANDS.map(x=>({...x})), ...ARROWS.map(x=>({...x})), ...WEAPONS.map(x=>({...x, type:'weapon'})), ...ARMORS.map(x=>({...x, type:'armor'}))];
+          for(let i=0;i<10;i++){
+            const it=clone(choice(pool));
+            it.type = it.type || (it.atk!=null?'weapon':(it.def!=null?'armor':it.type));
+            it.ided = true;
+            it.price = Math.max(10, Math.floor(priceOf(it)* (0.8 + Math.random()*0.6)));
+            stock.push(it);
+          }
+          this.townShopStock=stock;
+        }
+      };
+      const renderBuy=()=>{
+        ensureStock();
+        $("#townList").innerHTML='';
+        for(const it of this.townShopStock){
+          const d=document.createElement('div'); d.className='item';
+          d.innerHTML=`<div>${it.name}${it.type==='arrow'?' x'+num(it.count,0):''}</div><div class="dim">${num(it.price,0)}G</div>`;
+          d.onclick=()=>{
+            if(this.inv.length>=this.baseInvMax()){ this.msg("持ち物がいっぱい"); return; }
+            const cost=num(it.price,0);
+            if(num(this.p.gold,0)<cost){ this.msg("お金が足りない"); return; }
+            this.p.gold = num(this.p.gold,0)-cost;
+            const bought=clone(it); delete bought.price;
+            try{ bought.ch=itemChar(bought); }catch(e){}
+            this.inv.push(bought);
+            this.msg(`${bought.name}を買った`);
+            this.render();
+          };
+          $("#townList").appendChild(d);
+        }
+        $("#townActions").innerHTML='';
+        addAction("閉じる", ()=>{ close(); this.render(); });
+      };
+      const renderSell=()=>{
+        $("#townList").innerHTML='';
+        const sellables=this.inv.filter(it=>it.type!=='gold');
+        if(!sellables.length){
+          $("#townList").innerHTML='<div class="dim">売れるものがない</div>';
+        }else{
+          sellables.forEach((it,idx)=>{
+            const price=Math.max(1, Math.floor(priceOf(it)*0.5));
+            const d=document.createElement('div'); d.className='item';
+            d.innerHTML=`<div>${it.name}${it.type==='arrow'?' x'+num(it.count,0):''}</div><div class="dim">売値 ${price}G</div>`;
+            d.onclick=()=>{
+              // equipped check
+              if(this.p.wep===it || this.p.arm===it || this.p.arrow===it){ this.msg("装備中は売れない"); return; }
+              this.inv.splice(this.inv.indexOf(it),1);
+              this.p.gold = num(this.p.gold,0)+price;
+              this.msg(`${it.name}を売った`);
+              renderSell(); this.render();
+            };
+            $("#townList").appendChild(d);
+          });
+        }
+        $("#townActions").innerHTML='';
+        addAction("閉じる", ()=>{ close(); this.render(); });
+      };
+
+      addTab("買う", renderBuy);
+      addTab("売る", renderSell);
+      addTab("品揃え更新", ()=>{ this.townShopLastGen=0; renderBuy(); });
+      renderBuy();
+      show();
+      return;
+    }
+
+    if(npc.role==='storage'){
+      set("預かり屋","アイテムを預けたり引き取れます（預けた物は新規開始でも残ります）");
+      let multi=false;
+      let selected=new Set();
+      const refresh=()=>{
+        $("#townActions").innerHTML='';
+        addAction(multi?"複数選択:ON":"複数選択:OFF", ()=>{ multi=!multi; selected.clear(); refresh(); render(); });
+        addAction("閉じる", ()=>{ this.saveTownPersistent(); close(); this.render(); });
+      };
+      const render=()=>{
+        $("#townList").innerHTML='';
+        const modeLabel=$("#townTabs").querySelector('.pill.active')?.textContent||"";
+      };
+      const renderDeposit=()=>{
+        $("#townTabs").querySelectorAll('.pill').forEach(p=>p.classList.remove('active'));
+        const tabs=$("#townTabs").children; if(tabs[0]) tabs[0].classList.add('active');
+        $("#townList").innerHTML='';
+        if(!this.inv.length){
+          $("#townList").innerHTML='<div class="dim">持ち物がない</div>';
+        }else{
+          this.inv.forEach((it)=>{
+            const d=document.createElement('div'); d.className='item';
+            const on=selected.has(it);
+            d.innerHTML=`<div>${multi? (on?'☑ ':'☐ '):''}${it.name}${it.type==='arrow'?' x'+num(it.count,0):''}</div><div class="dim">${multi?'タップで選択':'預ける'}</div>`;
+            d.onclick=()=>{
+              if(multi){ if(on) selected.delete(it); else selected.add(it); renderDeposit(); return; }
+              if(this.p.wep===it || this.p.arm===it || this.p.arrow===it){ this.msg("装備中は預けられない"); return; }
+              const ser=Game._serializeItem(it);
+              this.townStorage.push(ser);
+              this.inv.splice(this.inv.indexOf(it),1);
+              this.msg(`${it.name}を預けた`);
+              renderDeposit(); this.render();
+            };
+            $("#townList").appendChild(d);
+          });
+        }
+        $("#townActions").innerHTML='';
+        addAction(multi?"選択を預ける":"", ()=>{});
+        if(multi){
+          addAction("選択を預ける", ()=>{
+            const arr=[...selected];
+            if(!arr.length){ this.msg("選択なし"); return; }
+            for(const it of arr){
+              if(this.p.wep===it || this.p.arm===it || this.p.arrow===it) continue;
+              this.townStorage.push(Game._serializeItem(it));
+              this.inv.splice(this.inv.indexOf(it),1);
+            }
+            selected.clear();
+            this.msg("まとめて預けた");
+            renderDeposit(); this.render();
+          });
+        }
+        refresh();
+      };
+      const renderWithdraw=()=>{
+        $("#townTabs").querySelectorAll('.pill').forEach(p=>p.classList.remove('active'));
+        const tabs=$("#townTabs").children; if(tabs[1]) tabs[1].classList.add('active');
+        $("#townList").innerHTML='';
+        if(!this.townStorage.length){
+          $("#townList").innerHTML='<div class="dim">預かりは空です</div>';
+        }else{
+          this.townStorage.forEach((o,idx)=>{
+            const it=Game._restoreItem(o);
+            const on=selected.has(idx);
+            const d=document.createElement('div'); d.className='item';
+            d.innerHTML=`<div>${multi?(on?'☑ ':'☐ '):''}${it?it.name:(o.name||'?')}${it&&it.type==='arrow'?' x'+num(it.count,0):''}</div><div class="dim">${multi?'タップで選択':'引き取る'}</div>`;
+            d.onclick=()=>{
+              if(multi){ if(on) selected.delete(idx); else selected.add(idx); renderWithdraw(); return; }
+              if(this.inv.length>=this.baseInvMax()){ this.msg("持ち物がいっぱい"); return; }
+              const got=Game._restoreItem(o);
+              if(got){ this.inv.push(got); this.msg(`${got.name}を引き取った`); }
+              this.townStorage.splice(idx,1);
+              renderWithdraw(); this.render();
+            };
+            $("#townList").appendChild(d);
+          });
+        }
+        $("#townActions").innerHTML='';
+        if(multi){
+          addAction("選択を引き取る", ()=>{
+            const ids=[...selected].sort((a,b)=>b-a);
+            if(!ids.length){ this.msg("選択なし"); return; }
+            for(const idx of ids){
+              if(this.inv.length>=this.baseInvMax()) break;
+              const o=this.townStorage[idx];
+              const got=Game._restoreItem(o);
+              if(got) this.inv.push(got);
+              this.townStorage.splice(idx,1);
+            }
+            selected.clear();
+            this.msg("まとめて引き取った");
+            renderWithdraw(); this.render();
+          });
+        }
+        refresh();
+      };
+      const renderLost=()=>{
+        $("#townTabs").querySelectorAll('.pill').forEach(p=>p.classList.remove('active'));
+        const tabs=$("#townTabs").children; if(tabs[2]) tabs[2].classList.add('active');
+        $("#townList").innerHTML='';
+        if(!this.townLostFound.length){
+          $("#townList").innerHTML='<div class="dim">返還品はありません</div>';
+        }else{
+          this.townLostFound.forEach((o,idx)=>{
+            const it=Game._restoreItem(o);
+            const d=document.createElement('div'); d.className='item';
+            d.innerHTML=`<div>${it?it.name:(o.name||'?')}</div><div class="dim">受け取る</div>`;
+            d.onclick=()=>{
+              if(this.inv.length>=this.baseInvMax()){ this.msg("持ち物がいっぱい"); return; }
+              const got=Game._restoreItem(o);
+              if(got){ this.inv.push(got); this.msg(`${got.name}が返ってきた`); }
+              this.townLostFound.splice(idx,1);
+              this.saveTownPersistent();
+              renderLost(); this.render();
+            };
+            $("#townList").appendChild(d);
+          });
+        }
+        $("#townActions").innerHTML='';
+        refresh();
+      };
+
+      addTab("預ける", renderDeposit);
+      addTab("引き取る", renderWithdraw);
+      addTab("返還品", renderLost);
+      renderDeposit();
+      refresh();
+      show();
+      return;
+    }
+
+    if(npc.role==='tagger'){
+      set("タグ職人","装備に『返還タグ』を付けられます（死亡時に町へ戻り、タグは消えます）");
+      const FEE=200;
+      $("#townTabs").innerHTML='';
+      $("#townList").innerHTML='';
+      const addEquip=(label,it)=>{
+        const d=document.createElement('div'); d.className='item';
+        if(!it){
+          d.innerHTML=`<div>${label}: なし</div><div class="dim"></div>`;
+          $("#townList").appendChild(d); return;
+        }
+        const tagged=!!it.returnTag;
+        d.innerHTML=`<div>${label}: ${it.name}${tagged?' [タグ済]':''}</div><div class="dim">${tagged?'付与済':'付ける '+FEE+'G'}</div>`;
+        d.onclick=()=>{
+          if(tagged){ this.msg("すでに付与済"); return; }
+          if(num(this.p.gold,0)<FEE){ this.msg("お金が足りない"); return; }
+          this.p.gold=num(this.p.gold,0)-FEE;
+          it.returnTag=true;
+          this.msg(`${it.name}にタグを付けた`);
+          this.render();
+          this.openTownNpcMenu(npc);
+        };
+        $("#townList").appendChild(d);
+      };
+      addEquip("武器", this.p.wep);
+      addEquip("盾", this.p.arm);
+      $("#townActions").innerHTML='';
+      addAction("閉じる", ()=>{ close(); this.render(); });
+      show();
+      return;
+    }
+
+    if(npc.role==='casino'){
+      set("カジノ","ゴールドで遊べます（0Gでも一部は練習できます）");
+      $("#townTabs").innerHTML='';
+      $("#townList").innerHTML='';
+      const addGame=(name,desc,fn)=>{
+        const d=document.createElement('div'); d.className='item';
+        d.innerHTML=`<div>${name}</div><div class="dim">${desc}</div>`;
+        d.onclick=()=>fn();
+        $("#townList").appendChild(d);
+      };
+      addGame("HiGH&LOW","ゴールドで勝負（0Gでもプレイ可。報酬は賭け金×倍率）", ()=>{ this.openHighLow(); });
+      addGame("10秒ストップ","10秒に近づけるだけ（無料）。途中で見えなくなるモードあり", ()=>{ this.openStop10(); });
+      addGame("マインスイーパー","ゴールドで勝負（0GでもOK：賭け金10G扱い）。サイズ/爆弾数で難易度変化（賭け金×倍率）", ()=>{ this.openMinesweeperSetup(); });
+      addGame("反射神経","合図が出た瞬間に止める（0GでもOK：賭け金10G扱い）。速いほど倍率UP", ()=>{ this.openReaction(); });
+      $("#townActions").innerHTML='';
+      addAction("閉じる", ()=>{ close(); this.render(); });
+      show();
+      return;
+    }
+
+    set(npc.name,"…");
+    $("#townActions").innerHTML='';
+    addAction("閉じる", ()=>{ close(); });
+    show();
+  }
+openHighLow(){
+  const ol = $("#townOL");
+  $("#townTitle").textContent = "HiGH&LOW";
+  $("#townDesc").textContent = "数字(1-6)が出ます。次が高いか低いか当ててください（引き分けは負け）。報酬は賭け金×倍率。";
+
+  $("#townTabs").innerHTML = '';
+  $("#townList").innerHTML = '';
+  $("#townActions").innerHTML = '';
+
+  const gold = num(this.p.gold, 0);
+  const cur = rand(1, 6);
+
+  // 連続で賭け金を回せる前提なので倍率は控えめ
+  const mult = 1.30;
+
+  // 0Gかつ賭け金0のときは「10G賭けた扱い」にする（初期資金づくり用）
+  const ZERO_G_SPECIAL_BET = 10;
+
+  const betOptionsBase = [1, 5, 10, 20, 50, 100, 200, 500, 1000];
+  const betOptions = betOptionsBase.filter(v => v <= gold);
+
+  // 前回の賭け金を保持（次回もそのまま賭けられる）
+  let bet = (this._hlBet != null) ? this._hlBet : null;
+
+  // 0Gのときは賭け金を強制的に特別扱いにする（賭け金選択UIは出さない）
+  let isZeroSpecial = false;
+  if(gold <= 0){
+    if(bet == null || bet <= 0){
+      bet = ZERO_G_SPECIAL_BET;
+      this._hlBet = bet;
+    }
+    isZeroSpecial = true;
+  }else{
+    // ゴールドがあるときは所持金に合わせてクランプ
+    if(bet != null) bet = Math.min(bet, gold);
+  }
+
+  const renderHeader = ()=>{
+    const d = document.createElement('div');
+    d.className = 'item';
+    const betTxt = (bet==null) ? '未選択' : (bet + 'G' + (isZeroSpecial ? '（0G特別）' : ''));
+    d.innerHTML = `<div>現在: ${cur}</div><div class="dim">所持金:${num(this.p.gold,0)}G　賭け金:${betTxt}　倍率:${mult.toFixed(2)}</div>`;
+    $("#townList").appendChild(d);
+  };
+
+  const addBtn = (label, fn)=>{
+    const b = document.createElement('div');
+    b.className = 'btn';
+    b.textContent = label;
+    b.onclick = ()=>fn();
+    $("#townActions").appendChild(b);
+  };
+
+  renderHeader();
+
+  // 所持金がある場合は賭け金を選ぶ（0Gのときは自動で特別賭け金になる）
+  if(gold > 0 && bet == null){
+    const info = document.createElement('div');
+    info.className = 'dim';
+    info.style.marginTop = '6px';
+    info.textContent = '賭け金を選んでください';
+    $("#townList").appendChild(info);
+
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.style.marginTop = '8px';
+    row.style.justifyContent = 'flex-start';
+    row.style.gap = '8px';
+
+    const addBet = (v)=>{
+      const bb = document.createElement('div');
+      bb.className = 'btn';
+      bb.textContent = v + 'G';
+      bb.onclick = ()=>{ this._hlBet = v; this.openHighLow(); };
+      row.appendChild(bb);
+    };
+
+    betOptions.slice(0, 12).forEach(addBet);
+
+    const allBtn = document.createElement('div');
+    allBtn.className = 'btn';
+    allBtn.textContent = '全額';
+    allBtn.onclick = ()=>{ this._hlBet = gold; this.openHighLow(); };
+    if(gold > 0) row.appendChild(allBtn);
+
+    $("#townList").appendChild(row);
+
+    addBtn('戻る', ()=>{ this.openTownNpcMenu(this.mons.find(m=>m.ai==='town' && m.role==='casino')); });
+    if(ol) ol.style.display = 'flex';
+    return;
+  }
+
+  const play = (guess)=>{
+    const g0 = num(this.p.gold, 0);
+
+    // 実際に賭けに使う金額
+    let effBet = bet;
+
+    // 0G時は必ず「10G賭けた扱い」（このケースは所持金からは引かない）
+    if(g0 <= 0){
+      effBet = ZERO_G_SPECIAL_BET;
+    }else{
+      // ゴールドがある場合は賭け金が所持金を超えないように
+      if(effBet > g0) effBet = g0;
+      if(effBet <= 0){
+        this.msg('賭け金を選んでください');
+        this._hlBet = null;
+        return this.openHighLow();
+      }
+      // 賭け金を先に支払う
+      this.p.gold = g0 - effBet;
+    }
+
+    // 次回も同額で賭けられるよう保存
+    this._hlBet = effBet;
+
+    const nxt = rand(1, 6);
+    const win = (guess === 'H') ? (nxt > cur) : (nxt < cur);
+
+    if(win){
+      const gain = Math.max(0, Math.floor(effBet * mult));
+      this.p.gold = num(this.p.gold, 0) + gain;
+      this.msg(`当たり！ ${nxt} -> +${gain}G（賭け金${effBet}G / 倍率${mult.toFixed(2)}）`);
+    }else{
+      this.msg(`外れ… ${nxt}`);
+    }
+
+    this.render();
+    this.openHighLow();
+  };
+
+  addBtn('LOW', ()=>play('L'));
+  addBtn('HIGH', ()=>play('H'));
+  addBtn('賭け金変更', ()=>{ this._hlBet = null; this.openHighLow(); });
+  addBtn('戻る', ()=>{ this.openTownNpcMenu(this.mons.find(m=>m.ai==='town' && m.role==='casino')); });
+
+  if(ol) ol.style.display = 'flex';
+}
+  openStop10(){
+    const ol=$("#townOL");
+    $("#townTitle").textContent="10秒ストップ";
+    $("#townDesc").textContent="スタートして、10.0秒に近いところで止めてください（無料）。途中で見えなくなるモードもあります。";
+    $("#townTabs").innerHTML='';
+    $("#townList").innerHTML='';
+    $("#townActions").innerHTML='';
+    let blind = !!this._stop10Blind;
+
+    const box=document.createElement('div');
+    box.className='item';
+    box.innerHTML=`
+      <div id="stop10State">準備OK</div>
+      <div class="dim">10.0秒±0.2でボーナス（ブラインド時は少し上乗せ）</div>
+      <div class="dim" id="stop10Mode">モード: ${blind? '途中で見えなくなる' : '通常'}</div>
+    `;
+    $("#townList").appendChild(box);
+    let t0=null, timer=null;
+    let hideAt=null, hidden=false;
+    const setState=(s)=>{ const el=document.getElementById('stop10State'); if(el) el.textContent=s; };
+    const setMode=()=>{ const el=document.getElementById('stop10Mode'); if(el) el.textContent = 'モード: ' + (blind? '途中で見えなくなる' : '通常'); };
+    const start=()=>{
+      if(timer) return;
+      t0=performance.now();
+      hidden=false;
+      // 途中で見えなくなる：1.2〜6.5秒のどこかで表示が消え、その後は「…」になる
+      hideAt = blind ? (rand(120, 650) / 100) : null;
+      timer=setInterval(()=>{
+        const dt=(performance.now()-t0)/1000;
+        if(blind && !hidden && hideAt!=null && dt>=hideAt){
+          hidden=true;
+        }
+        if(blind && hidden){
+          setState('…');
+        }else{
+          setState(dt.toFixed(2)+'秒');
+        }
+      },33);
+    };
+    const stop=()=>{
+      if(!timer) return;
+      clearInterval(timer); timer=null;
+      const dt=(performance.now()-t0)/1000;
+      const diff=Math.abs(dt-10);
+      setState(dt.toFixed(2)+'秒（差 '+diff.toFixed(2)+'）');
+      let reward=0;
+      if(diff<=0.20) reward=rand(60,120);
+      else if(diff<=0.50) reward=rand(20,60);
+      else reward=rand(0,20);
+      // ブラインドは少し上乗せ
+      if(blind) reward = Math.floor(reward * 1.15);
+      if(reward>0){
+        this.p.gold = num(this.p.gold,0)+reward;
+        this.msg(`報酬 +${reward}G`);
+      }else{
+        this.msg("参加賞");
+      }
+      this.render();
+    };
+    const addBtn=(label,fn)=>{ const b=document.createElement('div'); b.className='pill'; b.textContent=label; b.onclick=()=>fn(); $("#townActions").appendChild(b); return b; };
+    addBtn("START", start);
+    addBtn("STOP", stop);
+    const blindBtn = addBtn(`ブラインド:${blind?'ON':'OFF'}`, ()=>{
+      if(timer) return; // 計測中の切替は事故るので禁止
+      blind = !blind;
+      this._stop10Blind = blind;
+      setMode();
+      blindBtn.textContent = `ブラインド:${blind?'ON':'OFF'}`;
+    });
+    addBtn("もう一回", ()=>{ if(timer){ clearInterval(timer); timer=null; } this.openStop10(); });
+    addBtn("戻る", ()=>{ if(timer){ clearInterval(timer); timer=null; } this.openTownNpcMenu(this.mons.find(m=>m.ai==='town' && m.role==='casino')); });
+    if(ol) ol.style.display='flex';
+  }
+
+  openReaction(){
+    const ol = $("#townOL");
+    $("#townTitle").textContent = "反射神経";
+    $("#townDesc").textContent = "合図『NOW!』が出たらすぐ止めてください。速いほど倍率UP（0GでもOK：賭け金10G扱い）。";
+    $("#townTabs").innerHTML='';
+    $("#townList").innerHTML='';
+    $("#townActions").innerHTML='';
+
+    const gold = num(this.p.gold,0);
+    const ZERO_G_SPECIAL_BET = 10;
+
+    const betOptionsBase = [10, 20, 50, 100, 200, 500, 1000];
+    const betOptions = betOptionsBase.filter(v => v <= gold);
+    let bet = (this._rxBet != null) ? this._rxBet : null;
+
+    // 0Gは自動で10G扱い
+    let isZeroSpecial = false;
+    if(gold <= 0){
+      if(bet == null || bet <= 0) bet = ZERO_G_SPECIAL_BET;
+      isZeroSpecial = true;
+    }else{
+      if(bet != null) bet = Math.min(bet, gold);
+    }
+
+    const stateBox = document.createElement('div');
+    stateBox.className = 'item';
+    stateBox.innerHTML = `<div id="rxState">準備OK</div><div class="dim" id="rxSub">賭け金:${bet}G${isZeroSpecial?'（0G特別）':''}</div>`;
+    $("#townList").appendChild(stateBox);
+
+    // 所持金があるのに賭け金未選択なら選択UI
+    if(gold > 0 && (bet == null || bet <= 0)){
+      const info = document.createElement('div');
+      info.className = 'dim';
+      info.style.marginTop = '6px';
+      info.textContent = '賭け金を選んでください';
+      $("#townList").appendChild(info);
+
+      const row = document.createElement('div');
+      row.className = 'row';
+      row.style.marginTop = '8px';
+      row.style.justifyContent = 'flex-start';
+      row.style.gap = '8px';
+      const addBet = (v)=>{
+        const bb = document.createElement('div');
+        bb.className = 'btn';
+        bb.textContent = v + 'G';
+        bb.onclick = ()=>{ this._rxBet = v; this.openReaction(); };
+        row.appendChild(bb);
+      };
+      betOptions.slice(0, 12).forEach(addBet);
+      const allBtn = document.createElement('div');
+      allBtn.className = 'btn';
+      allBtn.textContent = '全額';
+      allBtn.onclick = ()=>{ this._rxBet = gold; this.openReaction(); };
+      row.appendChild(allBtn);
+      $("#townList").appendChild(row);
+
+      const back = document.createElement('div');
+      back.className = 'btn';
+      back.textContent = '戻る';
+      back.onclick = ()=>{ this.openTownNpcMenu(this.mons.find(m=>m.ai==='town' && m.role==='casino')); };
+      $("#townActions").appendChild(back);
+      if(ol) ol.style.display='flex';
+      return;
+    }
+
+    const setState = (s)=>{ const el=document.getElementById('rxState'); if(el) el.textContent=s; };
+    const setSub = (s)=>{ const el=document.getElementById('rxSub'); if(el) el.textContent=s; };
+
+    let waiting = false;
+    let armed = false;
+    let tNow = 0;
+    let waitTimer = null;
+
+    const start = ()=>{
+      if(waiting || armed) return;
+
+      const g0 = num(this.p.gold,0);
+      let effBet = bet;
+      if(g0 <= 0){
+        effBet = ZERO_G_SPECIAL_BET;
+        isZeroSpecial = true;
+      }else{
+        effBet = Math.min(Math.max(1, effBet), g0);
+        // 賭け金支払い
+        this.p.gold = g0 - effBet;
+      }
+      this._rxBet = effBet;
+      bet = effBet;
+      this.render();
+
+      setSub(`賭け金:${bet}G${isZeroSpecial?'（0G特別）':''} / 所持金:${num(this.p.gold,0)}G`);
+      setState('待て…');
+      waiting = true;
+      armed = false;
+      const delay = rand(120, 380) * 10; // 1200〜3800ms
+      waitTimer = setTimeout(()=>{
+        waiting = false;
+        armed = true;
+        tNow = performance.now();
+        setState('NOW!');
+      }, delay);
+    };
+
+    const stop = ()=>{
+      if(waiting){
+        // 早押し：負け（賭け金は戻らない）
+        clearTimeout(waitTimer); waitTimer=null;
+        waiting = false;
+        armed = false;
+        setState('早すぎ！');
+        this.msg('フライング…');
+        this.render();
+        return;
+      }
+      if(!armed) return;
+      armed = false;
+      const rt = (performance.now() - tNow) / 1000;
+      setState(`反応: ${rt.toFixed(3)}s`);
+
+      // 速いほど倍率UP（極端に稼げすぎないように上限）
+      let mult = 0.9;
+      if(rt <= 0.20) mult = 1.85;
+      else if(rt <= 0.28) mult = 1.55;
+      else if(rt <= 0.38) mult = 1.30;
+      else if(rt <= 0.55) mult = 1.10;
+      else mult = 0.95;
+      const gain = Math.max(0, Math.floor(bet * mult));
+      this.p.gold = num(this.p.gold,0) + gain;
+      this.msg(`報酬 +${gain}G（賭け金${bet}G / 倍率${mult.toFixed(2)}）`);
+      this.render();
+      setSub(`賭け金:${bet}G${isZeroSpecial?'（0G特別）':''} / 所持金:${num(this.p.gold,0)}G`);
+    };
+
+    const addBtn=(label,fn)=>{ const b=document.createElement('div'); b.className='pill'; b.textContent=label; b.onclick=()=>fn(); $("#townActions").appendChild(b); return b; };
+    addBtn('START', start);
+    addBtn('STOP', stop);
+    addBtn('もう一回', ()=>{ if(waitTimer){ clearTimeout(waitTimer); waitTimer=null; } waiting=false; armed=false; this.openReaction(); });
+    addBtn('賭け金変更', ()=>{ if(waitTimer){ clearTimeout(waitTimer); waitTimer=null; } waiting=false; armed=false; this._rxBet = null; this.openReaction(); });
+    addBtn('戻る', ()=>{ if(waitTimer){ clearTimeout(waitTimer); waitTimer=null; } waiting=false; armed=false; this.openTownNpcMenu(this.mons.find(m=>m.ai==='town' && m.role==='casino')); });
+
+    if(ol) ol.style.display='flex';
+  }
+
+
   d2Room(r){ const cx=r.x+~~(r.w/2), cy=r.y+~~(r.h/2); const dx=this.p.x-cx, dy=this.p.y-cy; return dx*dx+dy*dy; }
+
+
+  msCalcMultiplier(w,h,bombs){
+    const cells = w*h;
+    const density = bombs / Math.max(1, cells);
+    const ratio = bombs / Math.max(1, (cells - bombs));
+    let mult = 1.55 + ratio * (cells/36) * 2.0;
+    // densityが極端に低いと旨味が出ないので少し底上げ
+    mult += Math.max(0, (density - 0.08)) * (cells/36) * 3.0;
+    mult = Math.min(8.0, Math.max(1.55, mult));
+    return mult;
+  }
+
+  openMinesweeperSetup(){
+    const ol = $("#townOL");
+    $("#townTitle").textContent = "マインスイーパー";
+    $("#townDesc").textContent = "ゴールドで遊びます（0GでもOK：賭け金10G扱い）。サイズと爆弾数で難易度が変わり、クリア報酬は賭け金×倍率です。";
+    $("#townTabs").innerHTML = '';
+    $("#townList").innerHTML = '';
+    $("#townActions").innerHTML = '';
+
+    const gold = num(this.p.gold, 0);
+    const ZERO_G_SPECIAL_BET = 10;
+
+    if(!this._msSetup) this._msSetup = {};
+
+    // 前回の賭け金を維持（0Gのときは「10G扱い」で開始できる）
+    if(gold > 0){
+      const prev = (this._msLastBet != null) ? this._msLastBet : gold;
+      const cur = (this._msSetup.bet != null) ? num(this._msSetup.bet, prev) : prev;
+      this._msSetup.bet = Math.min(Math.max(1, cur), gold);
+    }else{
+      // 0G時は賭け金選択を省略し、開始時に10G扱いにする（bet=0を特殊扱い）
+      this._msSetup.bet = 0;
+    }
+    const sizes = [
+      {w:6,h:6,label:'小(6×6)'},
+      {w:8,h:8,label:'中(8×8)'},
+      {w:10,h:10,label:'大(10×10)'},
+      {w:12,h:12,label:'特大(12×12)'},
+    ];
+
+    const betBase = [10, 20, 50, 100, 200, 500, 1000];
+    let betOpts = [];
+    if(gold > 0){
+      betOpts = betBase.filter(v=>v<=gold);
+      if(!betOpts.length) betOpts = [Math.max(1, gold)];
+    }
+
+    const makeBombOpts = (w,h)=>{
+      const cells = w*h;
+      const a = Math.max(4, Math.floor(cells*0.12));
+      const b = Math.max(6, Math.floor(cells*0.18));
+      const c = Math.max(8, Math.floor(cells*0.25));
+      // 一意にして昇順
+      return [...new Set([a,b,c])].sort((x,y)=>x-y);
+    };
+
+    const render = ()=>{
+      $("#townList").innerHTML = '';
+      const head = document.createElement('div'); head.className='item';
+      const bet = this._msSetup.bet || 0;
+      const displayBet = (gold <= 0 && bet <= 0) ? ZERO_G_SPECIAL_BET : bet;
+      const sz = sizes[this._msSetup.sizeIdx ?? -1];
+      const bombs = this._msSetup.bombs || 0;
+      let multTxt='-'; let payoutTxt='-';
+      if(displayBet>0 && sz && bombs>0){
+        const mult=this.msCalcMultiplier(sz.w,sz.h,bombs);
+        multTxt = mult.toFixed(2);
+        payoutTxt = Math.floor(displayBet*mult) + 'G';
+      }
+      head.innerHTML = `<div>設定</div><div class="dim">所持金:${gold}G　賭け金:${displayBet}G${(gold<=0 && bet<=0)?'（10G扱い）':''}　サイズ:${sz?sz.label:'未選択'}　爆弾:${bombs?bombs:'未選択'}　倍率:${multTxt}　予想報酬:${payoutTxt}</div>`;
+      $("#townList").appendChild(head);
+
+      const section = (title)=>{
+        const t=document.createElement('div'); t.className='dim'; t.style.marginTop='10px'; t.textContent=title;
+        $("#townList").appendChild(t);
+      };
+      const row = ()=>{ const r=document.createElement('div'); r.className='row'; r.style.justifyContent='flex-start'; r.style.gap='8px'; r.style.marginTop='6px'; return r; };
+      const mkBtn=(label,selected,onClick)=>{
+        const b=document.createElement('div'); b.className='btn'+(selected?' sel':''); b.textContent=label; b.onclick=()=>onClick(); return b;
+      };
+
+      if(gold <= 0){
+        section('賭け金（0GでもOK）');
+        const info = document.createElement('div'); info.className='item';
+        info.innerHTML = `<div>所持金0でも遊べます</div><div class="dim">賭け金は自動で${ZERO_G_SPECIAL_BET}G扱い（勝つとゴールドが増え、次回はそのまま賭けられます）</div>`;
+        $("#townList").appendChild(info);
+      }else{
+        section('賭け金（必須）');
+        const r1=row();
+        for(const v of betOpts){ r1.appendChild(mkBtn(v+'G', this._msSetup.bet===v, ()=>{ this._msSetup.bet=v; render(); })); }
+        const allBtn = mkBtn('全額', this._msSetup.bet===gold, ()=>{ this._msSetup.bet=gold; render(); });
+        r1.appendChild(allBtn);
+        $("#townList").appendChild(r1);
+      }
+
+      section('サイズ');
+      const r2=row();
+      sizes.forEach((s,idx)=>{ r2.appendChild(mkBtn(s.label, this._msSetup.sizeIdx===idx, ()=>{ this._msSetup.sizeIdx=idx; this._msSetup.bombs=null; render(); })); });
+      $("#townList").appendChild(r2);
+
+      if(this._msSetup.sizeIdx!=null){
+        const s=sizes[this._msSetup.sizeIdx];
+        section('爆弾数（難易度）');
+        const r3=row();
+        const opts = makeBombOpts(s.w,s.h);
+        for(const v of opts){ r3.appendChild(mkBtn(v+'個', this._msSetup.bombs===v, ()=>{ this._msSetup.bombs=v; render(); })); }
+        $("#townList").appendChild(r3);
+      }
+    };
+
+    render();
+
+    const addBtn=(label,fn)=>{ const b=document.createElement('div'); b.className='btn'; b.textContent=label; b.onclick=()=>fn(); $("#townActions").appendChild(b); };
+    addBtn('開始', ()=>{
+      const goldNow = num(this.p.gold,0);
+      const betRaw = num(this._msSetup.bet, 0);
+      const szIdx = this._msSetup.sizeIdx;
+      const bombs = this._msSetup.bombs || 0;
+
+      const betSpecialOk = (goldNow <= 0 && betRaw <= 0);
+      if((!betSpecialOk && !betRaw) || szIdx==null || !bombs){
+        this.msg('賭け金・サイズ・爆弾数を選んでください');
+        return;
+      }
+      const s = sizes[szIdx];
+      // betRaw=0のときは startMinesweeper 側で「10G扱い」にする
+      this.startMinesweeper({w:s.w,h:s.h,bombs,bet:betRaw});
+    });
+    addBtn('戻る', ()=>{ this.openTownNpcMenu(this.mons.find(m=>m.ai==='town' && m.role==='casino')); });
+    if(ol) ol.style.display='flex';
+  }
+
+  startMinesweeper(cfg){
+    const w=cfg.w, h=cfg.h, bombs=cfg.bombs;
+    const ZERO_G_SPECIAL_BET = 10;
+
+    let bet = num(cfg.bet, 0);
+    const gold = num(this.p.gold, 0);
+    let usedSpecial = false;
+
+    // 0Gかつ賭け金0（未選択）のときは「10G賭けた扱い」で開始できる
+    if(gold <= 0 && bet <= 0){
+      bet = ZERO_G_SPECIAL_BET;
+      usedSpecial = true;
+    }
+
+    // それ以外は通常どおり賭け金必須
+    if(!usedSpecial){
+      if(bet <= 0){
+        this.msg('賭け金を選んでください');
+        return this.openMinesweeperSetup();
+      }
+      if(gold < bet){
+        this.msg('所持金が足りません');
+        return this.openMinesweeperSetup();
+      }
+      // 賭け金を先に支払う
+      this.p.gold = gold - bet;
+    }
+
+    // 前回賭け金として保持（次回のデフォルトに使う）
+    this._msLastBet = bet;
+    const cells=w*h;
+    // 盤面生成（爆弾配置は即時、初手爆弾は返金してやり直し）
+    const board=Array.from({length:h},()=>Array(w).fill(0));
+    const bombsSet=new Set();
+    const key=(x,y)=>y*w+x;
+    while(bombsSet.size < bombs){
+      const x=rand(0,w-1), y=rand(0,h-1);
+      const k=key(x,y);
+      if(bombsSet.has(k)) continue;
+      bombsSet.add(k);
+    }
+    for(const k of bombsSet){
+      const x=k%w, y=Math.floor(k/w);
+      board[y][x] = -1;
+    }
+    const dirs=[[-1,-1],[0,-1],[1,-1],[-1,0],[1,0],[-1,1],[0,1],[1,1]];
+    for(let y=0;y<h;y++) for(let x=0;x<w;x++){
+      if(board[y][x]===-1) continue;
+      let c=0;
+      for(const [dx,dy] of dirs){
+        const nx=x+dx, ny=y+dy;
+        if(nx<0||ny<0||nx>=w||ny>=h) continue;
+        if(board[ny][nx]===-1) c++;
+      }
+      board[y][x]=c;
+    }
+    this._ms={ w,h,bombs,bet, board, revealed: Array.from({length:h},()=>Array(w).fill(false)), flags: Array.from({length:h},()=>Array(w).fill(false)), mode:'dig', first:true, over:false };
+    this.openMinesweeperPlay();
+  }
+
+  openMinesweeperPlay(){
+    const ol = $("#townOL");
+    const ms = this._ms;
+    if(!ms) return this.openMinesweeperSetup();
+    $("#townTitle").textContent = "マインスイーパー";
+    const mult = this.msCalcMultiplier(ms.w, ms.h, ms.bombs);
+    $("#townDesc").textContent = `掘る/旗を切替できます。クリア報酬: 賭け金×倍率（倍率${mult.toFixed(2)}）`;
+    $("#townTabs").innerHTML = '';
+    $("#townList").innerHTML = '';
+    $("#townActions").innerHTML = '';
+
+    const head=document.createElement('div'); head.className='item';
+    head.innerHTML = `<div>賭け金:${ms.bet}G　爆弾:${ms.bombs}　モード:${ms.mode==='dig'?'掘る':'旗'}　所持金:${num(this.p.gold,0)}G</div><div class="dim">初手爆弾は返金して仕切り直し</div>`;
+    $("#townList").appendChild(head);
+
+    const grid=document.createElement('div');
+    grid.className='msGrid';
+    grid.style.gridTemplateColumns = `repeat(${ms.w}, 32px)`;
+    for(let y=0;y<ms.h;y++){
+      for(let x=0;x<ms.w;x++){
+        const cell=document.createElement('div');
+        cell.className='msCell';
+        const val=ms.board[y][x];
+        const rev=ms.revealed[y][x];
+        const fl=ms.flags[y][x];
+        if(rev){
+          cell.classList.add('revealed');
+          if(val===-1){ cell.textContent='💣'; cell.classList.add('bomb'); }
+          else if(val===0){ cell.textContent=''; }
+          else { cell.textContent=String(val); cell.classList.add('n'+val); }
+        }else{
+          if(fl){ cell.textContent='⚑'; cell.classList.add('flag'); }
+          else cell.textContent='';
+        }
+        cell.onclick = ()=>{
+          if(ms.over) return;
+          if(ms.mode==='flag'){ this.msToggleFlag(x,y); }
+          else { this.msReveal(x,y); }
+        };
+        grid.appendChild(cell);
+      }
+    }
+    $("#townList").appendChild(grid);
+
+    const addBtn=(label,sel,fn)=>{ const b=document.createElement('div'); b.className='btn'+(sel?' sel':''); b.textContent=label; b.onclick=()=>fn(); $("#townActions").appendChild(b); };
+    addBtn('掘る', ms.mode==='dig', ()=>{ ms.mode='dig'; this.openMinesweeperPlay(); });
+    addBtn('旗', ms.mode==='flag', ()=>{ ms.mode='flag'; this.openMinesweeperPlay(); });
+    addBtn('続ける（全額）', false, ()=>{
+      // 勝ったゴールドをそのまま賭けられる（所持金0のときは10G扱い）
+      const cfg={w:ms.w,h:ms.h,bombs:ms.bombs,bet:num(this.p.gold,0)};
+      this._ms=null;
+      this.startMinesweeper(cfg);
+    });
+    addBtn('もう一回（同額）', false, ()=>{
+      // 同額で続行
+      const cfg={w:ms.w,h:ms.h,bombs:ms.bombs,bet:ms.bet};
+      this._ms=null;
+      this.startMinesweeper(cfg);
+    });
+    addBtn('設定変更', false, ()=>{
+      const cfg={w:ms.w,h:ms.h,bombs:ms.bombs,bet:ms.bet};
+      this._ms=null;
+      // セットアップに戻す（同値を残す）
+      const szList=[{w:6,h:6},{w:8,h:8},{w:10,h:10},{w:12,h:12}];
+      const szIdx=szList.findIndex(s=>s.w===cfg.w&&s.h===cfg.h);
+      this._msSetup = { bet: Math.min(cfg.bet, Math.max(0, num(this.p.gold,0))), sizeIdx: szIdx, bombs: cfg.bombs };
+      this.openMinesweeperSetup();
+    });
+
+addBtn('やめる', false, ()=>{ this._ms=null; this.openTownNpcMenu(this.mons.find(m=>m.ai==='town' && m.role==='casino')); });
+    if(ol) ol.style.display='flex';
+  }
+
+  msToggleFlag(x,y){
+    const ms=this._ms; if(!ms||ms.over) return;
+    if(ms.revealed[y][x]) return;
+    ms.flags[y][x] = !ms.flags[y][x];
+    this.openMinesweeperPlay();
+  }
+
+  msReveal(x,y){
+    const ms=this._ms; if(!ms||ms.over) return;
+    if(ms.flags[y][x]) return;
+    if(ms.revealed[y][x]) return;
+    const val = ms.board[y][x];
+    if(ms.first && val===-1){
+      // 返金して仕切り直し（同条件で盤面だけ作り直す）
+      this.p.gold = num(this.p.gold,0) + ms.bet;
+      this.msg('初手が爆弾だったので返金して仕切り直し');
+      const cfg={w:ms.w,h:ms.h,bombs:ms.bombs,bet:ms.bet};
+      this._ms=null;
+      return this.startMinesweeper(cfg);
+    }
+    ms.first=false;
+    if(val===-1){
+      ms.over=true;
+      // 全表示
+      for(let yy=0;yy<ms.h;yy++) for(let xx=0;xx<ms.w;xx++) ms.revealed[yy][xx]=true;
+      this.msg('爆弾！ 失敗…');
+      return this.openMinesweeperPlay();
+    }
+    const dirs=[[-1,-1],[0,-1],[1,-1],[-1,0],[1,0],[-1,1],[0,1],[1,1]];
+    const q=[[x,y]];
+    while(q.length){
+      const [cx,cy]=q.pop();
+      if(ms.revealed[cy][cx]) continue;
+      if(ms.flags[cy][cx]) continue;
+      ms.revealed[cy][cx]=true;
+      if(ms.board[cy][cx]===0){
+        for(const [dx,dy] of dirs){
+          const nx=cx+dx, ny=cy+dy;
+          if(nx<0||ny<0||nx>=ms.w||ny>=ms.h) continue;
+          if(ms.revealed[ny][nx]) continue;
+          if(ms.board[ny][nx]===-1) continue;
+          q.push([nx,ny]);
+        }
+      }
+    }
+    // 勝利判定
+    let revCount=0;
+    for(let yy=0;yy<ms.h;yy++) for(let xx=0;xx<ms.w;xx++) if(ms.revealed[yy][xx]) revCount++;
+    const cells=ms.w*ms.h;
+    if(revCount >= (cells - ms.bombs)){
+      ms.over=true;
+      const mult=this.msCalcMultiplier(ms.w,ms.h,ms.bombs);
+      const reward=Math.max(0, Math.floor(ms.bet*mult));
+      this.p.gold = num(this.p.gold,0) + reward;
+      // 全表示（爽快）
+      for(let yy=0;yy<ms.h;yy++) for(let xx=0;xx<ms.w;xx++) ms.revealed[yy][xx]=true;
+      this.msg(`クリア！ +${reward}G（倍率${mult.toFixed(2)}）`);
+      return this.openMinesweeperPlay();
+    }
+    this.openMinesweeperPlay();
+  }
 
   ensureConnectivity(sx,sy){
     const vis=Array.from({length:this.h},()=>Array(this.w).fill(false));
@@ -392,6 +1809,7 @@ this.render();
     const cx=r.x+~~(r.w/2), cy=r.y+~~(r.h/2);
     const keep=scaleMon(MON[5],cx,cy,1); keep.hostile=false; keep.isShop=true; this.mons.push(keep);
     for(let i=0;i<9;i++){ const p=this.freeIn(r,false); if(!p) continue; const it=this.spawnRandomItem(p.x,p.y,Math.max(1,num(this.floor,1))); it.price=priceOf(it); this.shopCells.add(`${p.x},${p.y}`); }
+    this.shopExits.set(r.id, this.calcShopOriginalExits(r));
   }
   genMH(r){
     for(let y=r.y;y<r.y+r.h;y++) for(let x=r.x;x<r.x+r.w;x++){
@@ -438,6 +1856,171 @@ this.render();
     for(let yy=r.y-1;yy<=r.y+r.h;yy++) for(let xx=r.x-1;xx<=r.x+r.w;xx++){ if(xx<0||yy<0||xx>=this.w||yy>=this.h) continue; if(this.map[yy][xx]==='.') this.vis[yy][xx]=true; }
   }
   roomIdAt(x,y){ for(const r of this.rooms){ if(x>=r.x && x<r.x+r.w && y>=r.y && y<r.y+r.h) return r.id; } return -1; }
+  isInShop(x,y){
+    const rid=this.roomIdAt(x,y);
+    return (rid>=0 && this.shopRooms && this.shopRooms.has(rid));
+  }
+  shopRoomId(x,y){
+    const rid=this.roomIdAt(x,y);
+    return (rid>=0 && this.shopRooms && this.shopRooms.has(rid)) ? rid : -1;
+  }
+  isShopMerchOnFloor(it){
+    if(!it) return false;
+    const key=`${it.x},${it.y}`;
+    return this.isInShop(it.x,it.y) && this.shopCells.has(key) && it.price!=null;
+  }
+  calcShopOriginalExits(r){
+    const exits=new Set();
+    // 生成時点の「元からある出入口」だけを記録（壁破壊などで増えた出口は含めない）
+    for(let y=r.y;y<r.y+r.h;y++){
+      for(let x=r.x;x<r.x+r.w;x++){
+        const onEdge = (x===r.x || x===r.x+r.w-1 || y===r.y || y===r.y+r.h-1);
+        if(!onEdge) continue;
+        if(this.map[y][x]!=='.') continue;
+        const dirs=[[1,0],[-1,0],[0,1],[0,-1]];
+        for(const [dx,dy] of dirs){
+          const nx=x+dx, ny=y+dy;
+          if(this.isOut(nx,ny)) continue;
+          const outside = !(nx>=r.x && nx<r.x+r.w && ny>=r.y && ny<r.y+r.h);
+          if(!outside) continue;
+          if(this.map[ny][nx]!=='.' && this.map[ny][nx]!=='>' ) continue;
+          exits.add(`${x},${y}`);
+        }
+      }
+    }
+    return exits;
+  }
+  unpaidItemsForRoom(rid){
+    return this.inv.filter(it=>it && it.unpaid && it.shopRid===rid);
+  }
+  hasUnpaidInInv(){
+    return this.inv.some(it=>it && it.unpaid);
+  }
+  becomeThief(reason){
+    if(this.thief) return;
+    this.thief=true;
+    this.msg(reason||"泥棒だ！");
+    fxOmin();
+    for(const m of this.mons){ if(m && m.isShop){ m.hostile=true; } }
+  }
+  checkThiefState(){
+    if(this.thief) return;
+    if(!this.hasUnpaidInInv()) return;
+    if(!this.isInShop(this.p.x,this.p.y)){
+      this.becomeThief("泥棒だ！店主が敵対した");
+    }
+  }
+  clearThiefAndUnpaidOnDescend(){
+    // 階段を降りたら「泥棒状態」「売り物タグ」を必ず解除し、持ち物は自分の物になる
+    this.thief=false;
+    for(const it of this.inv){
+      if(it && it.unpaid){
+        delete it.unpaid;
+        delete it.shopRid;
+        delete it.price;
+      }
+    }
+  }
+  onItemPlacedOnFloor(item,x,y){
+    item.x=x; item.y=y;
+    const rid=this.shopRoomId(x,y);
+    const key=`${x},${y}`;
+    if(rid>=0){
+      // 店内の床に置かれた状態なら、会計も出ないし外に出ても敵対しない（売り物を戻した扱い）
+      if(item.unpaid){ delete item.unpaid; }
+      // もともと売り物だった品だけを「売り物床」として扱う（自分の私物を勝手に売り物化しない）
+      if(item.shopRid!=null || item.price!=null){
+        item.shopRid = rid;
+        if(item.price==null) item.price = priceOf(item);
+        this.shopCells.add(key);
+      }
+    }else{
+      // 店外に置いたら、その座標は売り物床ではない
+      this.shopCells.delete(key);
+    }
+  }
+  openShopDialogPickup(it, after){
+    this.shopDialogState={mode:'pickup', item:it, after};
+    const title=$("#shopDialogTitle"); if(title) title.textContent="売り物";
+    $("#shopDialogText").textContent=`${it.name}（${num(it.price,0)}G）を拾いますか？`;
+    $("#shopBillList").innerHTML="";
+    $("#shopMoney").textContent=`所持金: ${num(this.p.gold,0)}G`;
+    $("#btnPay").textContent="拾う";
+    $("#btnRefuse").textContent="拾わない";
+    $("#shopDialog").style.display="flex";
+  }
+  openShopDialogCheckout(rid, dx, dy){
+    const items=this.unpaidItemsForRoom(rid);
+    const total=items.reduce((s,it)=>s+num(it.price,0),0);
+    this.shopDialogState={mode:'checkout', rid, dx, dy, items, total};
+    const title=$("#shopDialogTitle"); if(title) title.textContent="お会計";
+    $("#shopDialogText").textContent=`未払い ${items.length}個 / 合計 ${total}G`;
+    $("#shopBillList").innerHTML = items.map(it=>(
+      `<div class="row" style="justify-content:space-between"><div>${it.name}</div><div class="dim">${num(it.price,0)}G</div></div>`
+    )).join("");
+    $("#shopMoney").textContent=`所持金: ${num(this.p.gold,0)}G`;
+    $("#btnPay").textContent="支払う";
+    $("#btnRefuse").textContent="支払わない";
+    $("#shopDialog").style.display="flex";
+  }
+  closeShopDialog(){
+    $("#shopDialog").style.display="none";
+    this.shopDialogState=null;
+  }
+  onShopDialogPay(){
+    const st=this.shopDialogState; if(!st) return;
+    if(st.mode==='pickup'){
+      const it=st.item;
+      this.closeShopDialog();
+      if(typeof st.after==='function') st.after(true, it);
+      return;
+    }
+    if(st.mode==='checkout'){
+      if(num(this.p.gold,0) < num(st.total,0)){
+        this.msg("所持金が足りない");
+        this.render();
+        return;
+      }
+      this.p.gold = num(this.p.gold,0) - num(st.total,0);
+      for(const it of st.items){
+        delete it.unpaid; delete it.shopRid; delete it.price;
+      }
+      this.msg(`支払い完了（${st.total}G）`);
+      const dx=st.dx, dy=st.dy;
+      this.closeShopDialog();
+      // そのまま移動を再実行（会計チェックはスキップ）
+      this.tryMove(dx,dy,{skipShopCheckout:true});
+      return;
+    }
+  }
+  onShopDialogRefuse(){
+    const st=this.shopDialogState; if(!st) return;
+    if(st.mode==='pickup'){
+      const it=st.item;
+      this.closeShopDialog();
+      if(typeof st.after==='function') st.after(false, it);
+      return;
+    }
+    if(st.mode==='checkout'){
+      this.msg("会計しないと持ち出せない");
+      this.closeShopDialog();
+      this.render();
+      return;
+    }
+  }
+  pickupShopMerch(it){
+    if(!it) return false;
+    if(this.inv.length>=this.baseInvMax()){ this.msg("これ以上持てない"); return false; }
+    // 店の品は「自動装填/自動装備」しない（装備扱いになりやすいので）
+    this.inv.push(it);
+    it.unpaid=true;
+    it.shopRid=this.shopRoomId(it.x,it.y);
+    this.shopCells.delete(`${it.x},${it.y}`);
+    this.items=this.items.filter(x=>x!==it);
+    this.msg(`${it.name}を拾った（売り物）`);
+    return true;
+  }
+
 
   tileChar(x,y){
     if(this.isOut(x,y)) return " ";
@@ -457,25 +2040,45 @@ this.render();
     const halfW=~~(this.viewW/2), halfH=~~(this.viewH/2);
     this.offX=clamp(this.p.x-halfW, 0, this.w-this.viewW);
     this.offY=clamp(this.p.y-halfH, 0, this.h-this.viewH);
+
+    // マップは span(cell) で描画（1ch固定）→ FXもズレない
     let out="";
     for(let y=0;y<this.viewH;y++){
       for(let x=0;x<this.viewW;x++){
-        out+=this.tileChar(x+this.offX,y+this.offY);
-      } out+="\n";
+        out+=this.tileSpan(x+this.offX,y+this.offY);
+      }
+      out+='<br>';
     }
-    $("#viewport").textContent=out;
+    const vp=$("#viewport");
+    vp.innerHTML=out;
+
+    // cell参照（FX用）
+    this._cellEls = Array.from(vp.querySelectorAll('.cell'));
+
+    // ステータスなど
     $("#chipBest").textContent=`Best ${this.bestFloor}F / Score ${this.bestScore}`;
     const eW=this.p.wep?`（E）`:""; const eA=this.p.arm?`（E）`:""; const eAr=this.p.arrow?`（E）`:"";
     $("#stats").textContent =
-`Lv:${num(this.p.lv,1)}  HP:${num(this.p.hp,0)}/${num(this.p.maxHp,1)}  力:${num(this.p.str,10)}  階:${num(this.floor,1)}  G:${num(this.p.gold,0)}
+`Lv:${num(this.p.lv,1)}  HP:${num(this.p.hp,0)}/${num(this.p.maxHp,1)}  STR:${num(this.p.str,10)}  階:${num(this.floor,1)}  G:${num(this.p.gold,0)}${this.thief?'  【泥棒中】':''}
 攻:${this.calcPlayerAtk()}  守:${this.calcPlayerDef()}
 矢:${num(this.p.ar,0)}（${this.p.arrow?this.p.arrow.kind:'なし'}）
 武:${this.p.wep?this.p.wep.name+(this.p.wep.plus?('+'+num(this.p.wep.plus,0)):''):'なし'}${this.p.wep?eW:''}
 盾:${this.p.arm?this.p.arm.name+(this.p.arm.plus?('+'+num(this.p.arm.plus,0)):''):'なし'}${this.p.arm?eA:''}
 矢装填:${this.p.arrow?this.p.arrow.kind:'なし'}${this.p.arrow?eAr:''}
 自動拾い:${this.autoPickup?'ON':'OFF'}`;
+    // Town: action labels
+    const shootBtn=document.querySelector('[data-act="shoot"]');
+    if(shootBtn) shootBtn.textContent = (this.mode==='town'?'話す':'撃つ');
+    const descBtn=document.querySelector('[data-act="descend"]');
+    if(descBtn) descBtn.textContent = (this.mode==='town'?'出る':'降りる');
     $("#lowHP").style.opacity = (num(this.p.hp,0)/Math.max(1,num(this.p.maxHp,1))<0.2)?1:0;
+
+    // FXキューがあれば再生
+    if(this.fxQueue && this.fxQueue.length && !this.fxBusy){
+      this.playFxQueue();
+    }
   }
+
 
   calcPlayerAtk(){
     const base = num(this.p.baseAtk, 0);
@@ -493,13 +2096,20 @@ this.render();
   needExp(){ return 100; }
 /*** ここから PART 3 へ続く ***/
   // ダメージ処理
-  hit(att,def,base){
+  
+hit(att,def,base){
     const atk = (att===this.p) ? this.calcPlayerAtk() : num(att && att.atk, 0);
     let defv  = (def===this.p) ? this.calcPlayerDef() : num(def && def.def, 0);
     let dmgBase = num(base, 0);
     const rnd = rand(-1,1);
 
     let dmg = (dmgBase + atk - defv + rnd);
+
+    // 店主は「攻撃されたら敵対」
+    if(att===this.p && def && def.ai==='shop' && def.hostile===false){
+      for(const m of this.mons){ if(m && m.ai==='shop') m.hostile=true; }
+      this.msg("店主が怒った！");
+    }
 
     if(att===this.p && this.p.wep){
       const w=this.p.wep;
@@ -516,10 +2126,21 @@ this.render();
     dmg = Math.floor(num(dmg, 1));
     if (!isFinite(dmg) || dmg < 0) dmg = 0;
 
+    const attIsPlayer = (att===this.p);
+    const defIsPlayer = (def===this.p);
+    const invActive = (defIsPlayer && num(this.p.invincible,0)>0);
+    let invBlocked = false;
+    if(invActive && dmg>0){
+      invBlocked = true;
+      dmg = 0;
+    }
+
+    let fxCombatMsgShown = false;
+
     const vp=$("#viewport"); vp.classList.remove('shake'); void vp.offsetWidth; vp.classList.add('shake');
     if(dmg>0) fxSlash();
 
-    if(def===this.p && this.p.arm){
+    if(defIsPlayer && this.p.arm && !invBlocked){
       const a=this.p.arm;
       if(a.nullify && Math.random() < num(a.nullify,0)){ this.msg("攻撃を無効化した！"); dmg=0; }
       if(dmg>0 && a.reflect && Math.random() < num(a.reflect,0)){
@@ -530,12 +2151,50 @@ this.render();
       }
     }
 
+    // ===== 攻撃FX＆被ダメ/与ダメトースト（点滅と同期） =====
+    try{
+      const s = (att && typeof att.x==='number') ? {x:att.x,y:att.y} : null;
+      const d = (def && typeof def.x==='number') ? {x:def.x,y:def.y} : null;
+      let msgText = "";
+      if(invBlocked){
+        msgText = `無敵！`;
+      }else if(dmg>0){
+        if(defIsPlayer){
+          const an = (att && att.name) ? att.name : "敵";
+          const ach = (att && att.ch) ? att.ch : "?";
+          msgText = `${an}(${ach}) から ${dmg} ダメージ！`;
+        }else if(attIsPlayer){
+          const dn = (def && def.name) ? def.name : "敵";
+          const dch = (def && def.ch) ? def.ch : "?";
+          msgText = `${dn}(${dch}) に ${dmg} ダメージ！`;
+        }
+      }
+      fxCombatMsgShown = !!msgText;
+      const linePts = [];
+      if(s && d){
+        const dist = Math.max(Math.abs(s.x-d.x), Math.abs(s.y-d.y));
+        if(dist>1){
+          // bresenham（端点除外）
+          let x0=s.x,y0=s.y,x1=d.x,y1=d.y;
+          let dx=Math.abs(x1-x0), sx=(x0<x1)?1:-1;
+          let dy=-Math.abs(y1-y0), sy=(y0<y1)?1:-1;
+          let err=dx+dy;
+          while(!(x0===x1 && y0===y1)){
+            const e2=2*err;
+            if(e2>=dy){ err+=dy; x0+=sx; }
+            if(e2<=dx){ err+=dx; y0+=sy; }
+            if(!(x0===x1 && y0===y1)) linePts.push({x:x0,y:y0});
+          }
+        }
+      }
+      if(s && d && (dmg>0 || invBlocked)) this.enqueueAttackFx(s,d,msgText,linePts);
+    }catch(e){}
+
     if(dmg<=0){ this.render(); return; }
     def.hp = Math.max(0, num(def.hp,1) - dmg);
 
-    if(def===this.p){
-      this.msg(`${dmg}のダメージ！`);
-      if(this.p.invincible>0) this.p.invincible = Math.max(0, num(this.p.invincible,0)-1);
+    if(defIsPlayer){
+      if(!fxCombatMsgShown) this.msg(`${dmg}のダメージ！`);
       if(num(this.p.hp,0)<=0){
         const idx=this.inv.findIndex(x=>x.type==="herb" && x.revive);
         if(idx>=0){
@@ -549,7 +2208,7 @@ this.render();
         this.gameOver();
       }
     }else{
-      this.msg(`${def.name}に${dmg}ダメージ`);
+      if(!fxCombatMsgShown) this.msg(`${def.name}に${dmg}ダメージ`);
       if(num(def.hp,0)<=0) this.kill(def,att);
       else if(att===this.p && this.p.wep && this.p.wep.lifesteal){
         const heal = Math.floor(Math.max(0, dmg * num(this.p.wep.lifesteal,0)));
@@ -604,27 +2263,95 @@ this.render();
     this.mons=this.mons.filter(x=>x!==m);
   }
 
-  tryMove(dx,dy){
+  tryMove(dx,dy,opts={}){
+    if(this.shopDialogState){ return; }
+    // 方向指定モード（射撃/杖/身代わり草）は「移動」と同居させない
     if(this.waitTarget){
-      if(this.waitTarget.mode==='wand'){ this.castWand(this.waitTarget.item,dx,dy); }
-      if(this.waitTarget.mode==='shoot'){ this.shootDir(dx,dy); }
-      if(this.waitTarget.mode==='herbDecoy'){ this.castHerbDecoy(dx,dy); }
+      const wt=this.waitTarget;
+      if(wt.mode==='wand'){
+        // オーバーレイ方向選択中でも、D-pad/キー入力で方向指定できるように
+        this.closeShootOL();
+        this.castWand(wt.item,dx,dy);
+      }
+      else if(wt.mode==='shoot'){
+        this.shootDir(dx,dy);
+      }
+      else if(wt.mode==='throw'){
+        this.throwDir(dx,dy);
+      }
+      else if(wt.mode==='throwGold'){
+        this.throwGoldDir(dx,dy);
+      }
+      else if(wt.mode==='herbDecoy'){
+        this.castHerbDecoy(dx,dy);
+      }
+      return;
     }
-    this.waitTarget=null;
     this.p.lastDir=[dx,dy];
     const nx=this.p.x+dx, ny=this.p.y+dy;
-    if(this.isOut(nx,ny)) return;
+    // Town: allow leaving from map edges ("画面端から出られない"対策)
+    if(this.isOut(nx,ny)){
+      if(this.mode==='town'){
+        // edge as an exit
+        this.openTownExitMenu("町の外に出ますか？");
+        this.render();
+      }
+      return;
+    }
+
+    // --- ショップ：元の出入口から「売り物」を持ち出すときだけ会計確認 ---
+    if(!opts.skipShopCheckout){
+      const curRid=this.shopRoomId(this.p.x,this.p.y);
+      const nextRid=this.shopRoomId(nx,ny);
+      if(curRid>=0 && nextRid!==curRid){
+        const exits=this.shopExits.get(curRid);
+        const isOrigExit = exits && exits.has(`${this.p.x},${this.p.y}`);
+        if(isOrigExit){
+          const unpaid=this.unpaidItemsForRoom(curRid);
+          if(unpaid.length){
+            this.openShopDialogCheckout(curRid, dx, dy);
+            return;
+          }
+        }
+      }
+    }
+
     if(this.isWall(nx,ny)){ if(this.p.wep && this.p.wep.wallBreak){ this.map[ny][nx]='.'; this.msg("壁を砕いた"); } this.render(); return; }
     const m=this.monAt(nx,ny);
-    if(m){ this.hit(this.p,m,0); }
+    if(m){
+      // Town: bump into NPC = talk (no combat)
+      if(this.mode==='town' && m.ai==='town'){
+        this.openTownNpcMenu(m);
+        this.render();
+        return;
+      }
+      this.hit(this.p,m,0); this.turnStep(); this.render(); return;
+    }
     else{
       this.p._ox=this.p.x; this.p._oy=this.p.y;
       this.p.x=nx; this.p.y=ny;
-      if(this.autoPickup){ this.doPickupHere(); }
       const tr=this.traps.find(t=>t.x===nx && t.y===ny);
       if(tr && !tr.seen){ tr.seen=true; if(tr.type==="arrow"){ this.msg("矢のワナ！"); this.hit({atk:10,hp:1,def:0}, this.p, 0); } }
       if(this.map[ny][nx]==='>'){ this.msg("階段がある"); fxOmin(); }
       this.revealRoomAt(nx,ny);
+
+      // --- ショップ：売り物の上に乗ったら拾う/拾わないを確認（このターンはここで一旦止める） ---
+      const it=this.itemAt(this.p.x,this.p.y);
+    // 店の売り物が店外にある状態で拾ったら、その瞬間から泥棒扱い（次の敵行動前に敵対）
+    if(it && it.price!=null && it.shopRid!=null && !this.isInShop(it.x,it.y)){
+      it.unpaid=true;
+    }
+
+      if(this.isShopMerchOnFloor(it)){
+        this.openShopDialogPickup(it, (pick)=>{
+          if(pick){ this.pickupShopMerch(it); }
+          this.turnStep();
+          this.render();
+        });
+        return;
+      }
+
+      if(this.autoPickup){ this.doPickupHere(); }
       this.turnStep();
     }
     this.render();
@@ -637,60 +2364,148 @@ this.render();
       if(num(this.p.gold,0)>=num(it.price,0)){ this.p.gold=num(this.p.gold,0)-num(it.price,0); this.msg(`購入: ${it.name}`); fxSpark(); }
       else return;
     }
-    if(this.inv.length>=this.baseInvMax()){ this.msg("これ以上持てない"); return; }
+
+    // 矢：種類と本数の整合を保ち、別種類は所持品へ（同種はスタック）
     if(it.type==='arrow'){
-      if(!this.p.arrow){ this.p.arrow = {kind: it.kind, dmg: num(it.dmg,5)}; this.msg(`${it.name}を装填（自動）`); }
-      else{ this.msg(`${it.name}を補充`); }
-      this.p.ar = num(this.p.ar,0) + num(it.count,0);
-      fxSpark();
-    } else if(it.type==='gold'){
+      handleArrowPickup(this, it);
+      return;
+    }
+
+    // 金
+    if(it.type==='gold'){
       this.p.gold = num(this.p.gold,0) + num(it.amount,0);
       this.msg(`${num(it.amount,0)}Gを拾った`);
       fxSpark();
-    } else {
-      this.inv.push(it);
-      this.msg(`${it.name}を拾った`);
-      fxSpark();
-      if((it.type==='weapon' && num(it.atk,0)>=8) || (it.type==='armor' && num(it.def,0)>=7)){
-        this.msg("強力な装備だ！"); this.flashInv(x=>x===it);
-      }
-      if(it.type==='scroll' && it.name.includes("脱出")) this.haveEscape=true;
+      this.items=this.items.filter(x=>x!==it);
+      return;
     }
+
+    // それ以外
+    if(this.inv.length>=this.baseInvMax()){ this.msg("これ以上持てない"); return; }
+    this.inv.push(it);
+    this.msg(`${it.name}を拾った`);
+    fxSpark();
+    if((it.type==='weapon' && num(it.atk,0)>=8) || (it.type==='armor' && num(it.def,0)>=7)){
+      this.msg("強力な装備だ！"); this.flashInv(x=>x===it);
+    }
+    if(it.type==='scroll' && it.name.includes("脱出")) this.haveEscape=true;
     this.items=this.items.filter(x=>x!==it);
   }
 
-  descend(){ if(this.map[this.p.y][this.p.x]!=='>'){ this.msg("ここには階段がない"); return; } this.floor=Math.min(MAX_FLOOR, num(this.floor,1)+1); if(this.floor>this.bestFloor){ this.bestFloor=this.floor; localStorage.setItem('bestF',this.bestFloor); } this.gen(this.floor); }
-
-  askShoot(){ if(!this.p.arrow || num(this.p.ar,0)<=0){ this.msg("矢がない"); return; } this.waitTarget={mode:'shoot'}; this.msg("撃つ方向を選んでください"); }
-  shootDir(dx,dy){
-    if(!this.p.arrow || num(this.p.ar,0)<=0){ this.msg("矢がない"); return; }
-    let x=this.p.x, y=this.p.y, hit=null, last={x,y};
-    const kind=this.p.arrow.kind;
-    const step=(fx,fy,max=10,cb)=>{ for(let i=0;i<max;i++){ x+=fx; y+=fy; if(this.isOut(x,y)||this.isWall(x,y)) break; last={x,y}; if(cb && cb(x,y)===false) break; } };
-    if(kind==="line"){ step(dx,dy,10,(xx,yy)=>{ const m=this.monAt(xx,yy); if(m){ this.hit(this.p,m,8); } return true; }); fxSlash(); }
-    else if(kind==="pierce"){ step(dx,dy,10,(xx,yy)=>{ const m=this.monAt(xx,yy); if(m){ this.hit(this.p,m,num(this.p.arrow.dmg,5)); } return true; }); }
-    else if(kind==="cone3"){ for(const [sx,sy] of [[dx,dy],[dx,dy-1],[dx,dy+1]]){ x=this.p.x; y=this.p.y; step(sx,sy,3,(xx,yy)=>{ const m=this.monAt(xx,yy); if(m){ this.hit(this.p,m,5); return false; } return true; }); } }
-    else{
-      for(let i=0;i<10;i++){ x+=dx; y+=dy; if(this.isOut(x,y)||this.isWall(x,y)) break; last={x,y}; const m=this.monAt(x,y); if(m){ hit=m; break; } }
+  descend(){
+    if(this.mode==='town'){
+      if(this.map[this.p.y][this.p.x]!=='>'){ this.msg("ここには出入口がない"); return; }
+      this.openTownExitMenu("どこへ行きますか？");
+      return;
     }
-    this.p.ar=Math.max(0,num(this.p.ar,0)-1);
+    if(this.map[this.p.y][this.p.x]!=='>'){ this.msg("ここには階段がない"); return; }
+    this.floor=Math.min(MAX_FLOOR, num(this.floor,1)+1);
+    if(this.floor>this.bestFloor){ this.bestFloor=this.floor; localStorage.setItem('bestF',this.bestFloor); }
+    this.gen(this.floor);
+  }
+
+  askShoot(){
+    if(this.mode==='town'){
+      this.townTalk();
+      return;
+    }
+    if(!this.p.arrow || num(this.p.ar,0)<=0){
+      this.msg("矢がない");
+      return;
+    }
+    // 方向をオーバーレイUIで選ぶ（移動入力と分離する）
+    this.waitTarget = {mode:'shoot'};
+    this.openShootOL("方向を選んで射撃");
+    this.msg("撃つ方向を選んでください");
+  }
+
+  // Town: exit menu (shared by stairs and map edges)
+  openTownExitMenu(descText){
+    $("#townTabs").innerHTML='';
+    $("#townList").innerHTML='';
+    $("#townActions").innerHTML='';
+    $("#townTitle").textContent="出入口";
+    $("#townDesc").textContent=descText || "どこへ行きますか？";
+    const addBtn=(label,fn)=>{
+      const b=document.createElement('div');
+      b.className='pill';
+      b.textContent=label;
+      b.onclick=()=>fn();
+      $("#townActions").appendChild(b);
+    };
+    addBtn("ダンジョンへ", ()=>{ $("#townOL").style.display='none'; this.startDungeonFromTown(); });
+    addBtn("タイトルへ戻る", ()=>{ $("#townOL").style.display='none'; this.saveHoldToTitle(); showTitle(); });
+    addBtn("キャンセル", ()=>{ $("#townOL").style.display='none'; });
+    $("#townOL").style.display='flex';
+  }
+
+  openShootOL(title){
+    const ol = $("#shootOL");
+    if(!ol) return;
+    const t = $("#shootTitle");
+    if(t && typeof title === 'string' && title.trim()) t.textContent = title;
+    ol.style.display = "flex";
+  }
+  closeShootOL(){
+    const ol = $("#shootOL");
+    if(ol) ol.style.display = "none";
+  }
+  cancelTargeting(){
+    // 射撃/投げ/杖の方向選択キャンセル
+    if(this.waitTarget && ['shoot','throw','throwGold','wand'].includes(this.waitTarget.mode)){
+      this.waitTarget = null;
+      this.closeShootOL();
+      this.msg("キャンセル");
+      this.render();
+    }
+  }
+
+  selectDirFromOL(dx,dy){
+    if(!this.waitTarget) return;
+    const m = this.waitTarget.mode;
+    if(m==='shoot') return this.shootDir(dx,dy);
+    if(m==='throw') return this.throwDir(dx,dy);
+    if(m==='throwGold') return this.throwGoldDir(dx,dy);
+    if(m==='wand'){
+      this.closeShootOL();
+      const w = this.waitTarget.item;
+      this.waitTarget = null;
+      this.castWand(w,dx,dy);
+      return;
+    }
+    // herbDecoyなどは現状は移動入力で指定（必要なら後で拡張）
+  }
+
+
+  shootDir(dx,dy){
+    if(!this.waitTarget || this.waitTarget.mode!=='shoot') return;
+    this.closeShootOL();
+    // 射撃だけ実行（移動しない）
+    const hit = this.lineHit(this.p.x,this.p.y,dx,dy, this.p.arrow.range||8);
     if(hit){
-      if(kind==="bomb"){ this.msg("爆発矢が炸裂！"); this.explode(hit.x,hit.y,2,8,true); fxSlash(); }
-      else if(kind==="bomb3"){ this.msg("大爆発矢！"); this.explode(hit.x,hit.y,3,10,true); fxSlash(); }
-      else if(kind==="sleep"){ hit.sleep=3; this.msg("眠らせた"); }
-      else if(kind==="stop"){ hit.stop=3; this.msg("動けない！"); }
-      else if(kind==="warp"){ const p=this.randomRoomCell(); if(p){ this.setMonPos(hit,p.x,p.y); this.msg("どこかへ飛ばした"); } }
-      else if(kind==="ignite"){ this.hit(this.p,hit,9); }
-      else if(kind==="slow"){ hit.slow=3; this.hit(this.p,hit,6); }
-      else if(kind==="stun"){ hit.stun=1; this.hit(this.p,hit,8); }
+      // 命中
+      if(this.p.arrow.kind==="poison"){ hit.poison=3; this.hit(this.p,hit,3); }
+      else if(this.p.arrow.kind==="sleep"){ hit.sleep=2; this.hit(this.p,hit,1); }
+      else if(this.p.arrow.kind==="slow"){ hit.slow=3; this.hit(this.p,hit,1); }
+      else if(this.p.arrow.kind==="stun"){ hit.stun=1; this.hit(this.p,hit,8); }
       else { this.hit(this.p,hit,num(this.p.arrow.dmg,5)); }
     }
-    this.turnStep(); this.render();
+    this.p.ar = Math.max(0, num(this.p.ar,0)-1);
+    this.waitTarget=null;
+    this.turnStep();
+    this.render();
   }
+
 
   useItemMenu(idx){
     const it=this.inv[idx]; if(!it) return;
     if(this.waitId){ if(!it.ided){ it.ided=true; this.msg(`${it.name}を識別した！`);} else this.msg("既に識別済み"); this.waitId=false; this.render(); if($("#invOL").style.display==='flex'){ this.openInv(); } return; }
+
+    // 店の品（売り物）を店内で使った時点で泥棒（装備もアウト）
+    if(it.unpaid && this.isInShop(this.p.x,this.p.y)){
+      this.becomeThief("店の品を店内で使用した");
+    }
+
     if(it.type==='weapon'){ this.p.wep=it; this.msg(`${it.name}を装備した`); this.flashInv(x=>x===it); }
     else if(it.type==='armor'){ this.p.arm=it; this.msg(`${it.name}を装備した`); this.flashInv(x=>x===it); }
     else if(it.type==='herb'){
@@ -698,7 +2513,13 @@ this.render();
       it.effect(this,this.p); this.consume(idx);
     }
     else if(it.type==='scroll'){ it.effect(this); this.consume(idx); }
-    else if(it.type==='wand'){ this.waitTarget={mode:'wand', item:it}; this.msg("杖を振る方向を指定"); }
+    else if(it.type==='wand'){
+      if(num(it.uses,0)<=0 || it.depleted){ this.msg("杖は力を失っている（投げると効果）"); return; }
+      this.waitTarget={mode:'wand', item:it};
+      this.openShootOL("方向を選んで杖を振る");
+      this.msg("杖を振る方向を選んでください");
+      return;
+    }
     else if(it.type==='pot'){ this.openPot(it); return; }
     else if(it.type==='potBomb'){ this.msg("壺は投げて使おう"); }
     else if(it.type==='arrow'){ 
@@ -730,24 +2551,192 @@ this.render();
     this.msgGreen(`${m.name}は身代わりになった（${m.decoyT}T）`);
   }
 
+
+  // === お金（G）投げ：金額ぶんの固定ダメージ ===
+  openGoldMenu(){
+    $("#menuTitle").textContent=`『お金』`;
+    $("#menuDesc").textContent=`投げると投げた金額ぶんのダメージ（消費）`;
+    const box=$("#menuBtns"); box.innerHTML="";
+    const range=$("#menuRange"); if(range){ range.style.display='none'; }
+
+    const add=(label,fn)=>{
+      const b=document.createElement('div');
+      b.className='pill'; b.textContent=label;
+      b.onclick=()=>{ $("#menuOL").style.display='none'; fn(); };
+      box.appendChild(b);
+    };
+
+    add('投げる', ()=>this.throwGoldMenu());
+    add('キャンセル', ()=>{});
+    $("#menuOL").style.display='flex';
+  }
+
+  throwGoldMenu(){
+    const max = Math.max(0, num(this.p.gold,0));
+    if(max<=0){ this.msg("お金がない"); return; }
+    let amt = 0;
+    try{
+      const s = prompt(`投げる金額（1〜${max}）`, String(Math.min(50,max)));
+      if(s==null) return;
+      amt = Math.floor(Number(s));
+    }catch(e){ amt = 0; }
+    if(!isFinite(amt) || amt<=0){ this.msg("キャンセル"); return; }
+    amt = Math.min(max, amt);
+
+    this.waitTarget = {mode:'throwGold', amount: amt};
+    this.openShootOL(`方向を選んでお金を投げる（${amt}G）`);
+    this.msg("投げる方向を選んでください");
+  }
+
+  // 防御無視の固定ダメージ（主に投げ金用）
+  rawDamage(att,def,dmg){
+    const attIsPlayer = (att===this.p);
+    const defIsPlayer = (def===this.p);
+    const invActive = (defIsPlayer && num(this.p.invincible,0)>0);
+    if(invActive && num(dmg,0)>0){
+      try{ toast("無敵！","toast-dmg"); }catch(e){}
+      this.render();
+      return 0;
+    }
+
+    dmg = Math.floor(num(dmg,0));
+    if(!isFinite(dmg) || dmg<=0){ this.render(); return 0; }
+
+    const vp=$("#viewport"); vp.classList.remove('shake'); void vp.offsetWidth; vp.classList.add('shake');
+    fxSlash();
+    try{
+      const dn = (def && def.name) ? def.name : "敵";
+      const dch = (def && def.ch) ? def.ch : "?";
+      toast(`${dn}(${dch}) に ${dmg} ダメージ！`,'toast-dmg');
+    }catch(e){}
+
+    def.hp = Math.max(0, num(def.hp,1) - dmg);
+
+    if(defIsPlayer){
+      if(num(this.p.hp,0)<=0){
+        const idx=this.inv.findIndex(x=>x.type==="herb" && x.revive);
+        if(idx>=0){
+          this.inv.splice(idx,1);
+          this.p.maxHp = Math.max(1, num(this.p.maxHp,1));
+          this.p.hp = Math.max(1, Math.floor(num(this.p.maxHp,1)*0.7));
+          this.msg("復活草が発動！");
+          fxSpark();
+          this.render();
+          return dmg;
+        }
+        this.gameOver();
+      }
+    }else{
+      if(def.hp<=0) this.kill(def, attIsPlayer ? this.p : att);
+    }
+    return dmg;
+  }
+
+  throwGoldDir(dx,dy){
+    if(!this.waitTarget || this.waitTarget.mode!=='throwGold') return;
+    const amt = Math.max(0, num(this.waitTarget.amount,0));
+    this.closeShootOL();
+    this.waitTarget = null;
+
+    const have = Math.max(0, num(this.p.gold,0));
+    if(have<=0 || amt<=0){ this.msg("お金がない"); return; }
+
+    const spend = Math.min(have, amt);
+    this.p.gold = have - spend;
+
+    // 投げた方向を記憶（次の行動の既定方向）
+    this.p.lastDir=[dx,dy];
+
+    let x=this.p.x, y=this.p.y, hit=null, last={x,y};
+    for(let i=0;i<10;i++){ x+=dx; y+=dy; if(this.isOut(x,y)||this.isWall(x,y)) break; last={x,y}; const m=this.monAt(x,y); if(m){ hit=m; break; } }
+
+    if(hit){
+      this.rawDamage(this.p, hit, spend);
+    }else{
+      // 外したら落ちる（拾える）
+      this.items.push({name:"G",type:"gold",amount:spend,ch:"$",x:last.x,y:last.y});
+      this.msg(`${spend}Gを投げ捨てた`);
+    }
+
+    this.turnStep(); this.render();
+    if($("#invOL").style.display==='flex'){ this.openInv(); }
+  }
+
   throwItemMenu(idx){
     const it=this.inv[idx]; if(!it) return;
-    const [dx,dy]=this.p.lastDir; if(dx===0&&dy===0){ this.msg("方向が定まっていない"); return; }
+
+    // 方向をオーバーレイUIで選ぶ（矢と同様）
+    this.waitTarget = {mode:'throw', idx};
+    this.openShootOL("方向を選んで投げる");
+    this.msg("投げる方向を選んでください");
+    return;
+  }
+
+  throwDir(dx,dy){
+    if(!this.waitTarget || this.waitTarget.mode!=='throw') return;
+    const idx = this.waitTarget.idx;
+    const it = this.inv[idx];
+    this.closeShootOL();
+    this.waitTarget = null;
+
+    if(!it){ this.msg("投げる物がない"); return; }
+
+    // 投げた方向を記憶（次の行動の既定方向）
+    this.p.lastDir=[dx,dy];
+
     let x=this.p.x, y=this.p.y, hit=null, last={x,y};
     for(let i=0;i<10;i++){ x+=dx; y+=dy; if(this.isOut(x,y)||this.isWall(x,y)) break; last={x,y}; const m=this.monAt(x,y); if(m){ hit=m; break; } }
     if(it.type==='herb'){
       if(it.name==="身代わり草" && hit){ const T=rand(10,40); this.makeDecoy(hit,T); this.consume(idx,true); this.turnStep(); this.render(); return; }
-      if(hit){ it.effect(this,hit); } else { this.items.push({...it,x:last.x,y:last.y}); } this.consume(idx,true);
+      if(hit){ it.effect(this,hit); } else { const dropped={...it}; this.onItemPlacedOnFloor(dropped,last.x,last.y); this.items.push(dropped); }
+      this.consume(idx,true);
     }
-    else if(it.type==='wand'){ if(hit){ this.hit(this.p,hit,2); } this.consume(idx,true); }
-    else if(it.type==='potBomb'){ const cx=hit?hit.x:last.x, cy=hit?hit.y:last.y; this.msg("壺が爆ぜた！"); this.explode(cx,cy,3,12,true); this.consume(idx,true); fxSlash(); }
-    else{ if(hit){ this.hit(this.p,hit,2); } else { this.items.push({...it,x:last.x,y:last.y}); } this.consume(idx,true); }
+    else if(it.type==='wand'){
+      // 杖は「残り回数0でもOK」：投げたら効果発動（投擲で消費）
+      if(typeof it.cast==='function'){ it.cast(this, hit, dx, dy); }
+      else{ this.msg("何も起きなかった"); }
+      this.inv.splice(idx,1);
+    }
+    else if(it.type==='weapon'){
+      const wAtk = Math.max(0, num(it.atk,0) + num(it.plus,0));
+      const base = Math.max(6, Math.floor(wAtk*3 + 4));
+      if(hit){ this.hit({atk:0,x:this.p.x,y:this.p.y,name:"投擲"}, hit, base); }
+      else { const dropped={...it}; this.onItemPlacedOnFloor(dropped,last.x,last.y); this.items.push(dropped); }
+      this.inv.splice(idx,1);
+    }
+    else if(it.type==='armor'){
+      const aDef = Math.max(0, num(it.def,0) + num(it.plus,0));
+      const base = Math.max(5, Math.floor(aDef*2 + 3));
+      if(hit){ this.hit({atk:0,x:this.p.x,y:this.p.y,name:"投擲"}, hit, base); }
+      else { const dropped={...it}; this.onItemPlacedOnFloor(dropped,last.x,last.y); this.items.push(dropped); }
+      this.inv.splice(idx,1);
+    }
+    else if(it.type==='potBomb'){
+      const cx=hit?hit.x:last.x, cy=hit?hit.y:last.y;
+      this.msg("壺が爆ぜた！");
+      this.explode(cx,cy,3,12,true);
+      this.consume(idx,true);
+      fxSlash();
+    }
+    else{
+      if(hit){ this.hit({atk:0,x:this.p.x,y:this.p.y,name:"投擲"}, hit,2); }
+      else { const dropped={...it}; this.onItemPlacedOnFloor(dropped,last.x,last.y); this.items.push(dropped); }
+      this.consume(idx,true);
+    }
     this.turnStep(); this.render();
     if($("#invOL").style.display==='flex'){ this.openInv(); }
   }
 
   consume(idx,remove=true){ const it=this.inv[idx]; if(!it) return;
-    if(it.type==='wand'){ it.uses=num(it.uses,0)-1; if(it.uses<=0){ this.inv.splice(idx,1); this.msg("杖は砕け散った"); } }
+    if(it.type==='wand'){
+      it.uses = Math.max(0, num(it.uses,0)-1);
+      if(it.uses<=0){
+        it.uses = 0;
+        it.depleted = true;
+        if(it.name && !it.name.includes('（空）')) it.name += '（空）';
+        this.msg("杖の力が尽きた（投げると効果）");
+      }
+    }
     else if(remove){ this.inv.splice(idx,1); }
   }
 
@@ -769,15 +2758,25 @@ this.render();
   forEachAround(x,y,fn){ for(let dy=-1;dy<=1;dy++) for(let dx=-1;dx<=1;dx++){ if(dx===0&&dy===0) continue; const nx=x+dx, ny=y+dy; if(this.isOut(nx,ny)) continue; fn(nx,ny);} }
   castWand(w,dx,dy){
     if(!w || w.type!=='wand'){ this.msg("振れない"); return; }
+    if(num(w.uses,0)<=0 || w.depleted){ this.msg("杖は力を失っている（投げると効果）"); return; }
     let x=this.p.x, y=this.p.y, hit=null;
     for(let i=0;i<10;i++){ x+=dx; y+=dy; if(this.isOut(x,y)||this.isWall(x,y)) break; const m=this.monAt(x,y); if(m){ hit=m; break; } }
     w.cast(this, hit, dx, dy);
-    const idx=this.inv.indexOf(w); if(idx>=0){ this.consume(idx,false); if(num(w.uses,0)<=0) this.inv.splice(idx,1); }
+    const idx=this.inv.indexOf(w);
+    if(idx>=0){ this.consume(idx,false); }
     this.turnStep(); this.render();
+    if($("#invOL").style.display==='flex'){ this.openInv(); }
   }
 
   turnStep(){
+    if(this.mode==='town'){
+      this.turn++;
+      if(this.turn%5===0 && num(this.p.hp,0)<num(this.p.maxHp,1)) this.p.hp=num(this.p.hp,0)+1;
+      if(this.p.arm && this.p.arm.regen && this.turn%4===0) this.p.hp=Math.min(num(this.p.maxHp,1),num(this.p.hp,0)+1);
+      return;
+    }
     this.turn++;
+    this.checkThiefState();
     if(this.turn%5===0 && num(this.p.hp,0)<num(this.p.maxHp,1)) this.p.hp=num(this.p.hp,0)+1;
     if(this.p.arm && this.p.arm.regen && this.turn%4===0) this.p.hp=Math.min(num(this.p.maxHp,1),num(this.p.hp,0)+1);
     if(this.turn%NATURAL_SPAWN_CHECK===0 && this.mons.length<NATURAL_SPAWN_MIN){
@@ -786,6 +2785,12 @@ this.render();
     // デコイ寿命
     for(const m of this.mons){ if(m.decoy){ m.decoyT=num(m.decoyT,0)-1; if(m.decoyT<=0){ m.decoy=false; this.msgGreen(`${m.name}の身代わり効果が切れた`); } } }
     this.enemyPhase();
+    // 無敵（ターン制）：敵フェーズ後に1減らす（使用直後から効く）
+    if(num(this.p.invincible,0)>0){
+      const before = num(this.p.invincible,0);
+      this.p.invincible = Math.max(0, before-1);
+      if(before>0 && this.p.invincible===0) this.msg("無敵が切れた");
+    }
   }
 
   // 敵AI（デコイ優先／デコイはモンスターを狙う）
@@ -804,6 +2809,9 @@ this.render();
       const slowStep = m.slow? (this.turn%2===0) : true;
       if(!slowStep) continue;
       if(m.stop){ m.stop--; continue; }
+
+      // 店主は「攻撃されるまで非敵対」
+      if(m.ai==='shop' && !m.hostile){ continue; }
 
       if(Math.abs(m.x-this.p.x)<=1 && Math.abs(m.y-this.p.y)<=1 && !(m.x===this.p.x && m.y===this.p.y) && !m.decoy){
         this.hit(m,this.p,0); continue;
@@ -852,9 +2860,13 @@ this.render();
         while(dirs.length){ const d=dirs.splice(rand(0,dirs.length-1),1)[0]; const nx=m.x+d[0], ny=m.y+d[1]; if(!this.isOut(nx,ny)&&!this.isWall(nx,ny)&&!this.monAt(nx,ny)) { step=[nx,ny]; break; } }
       }
 
-      if(step){ const [nx,ny]=step;
-        if(target && Math.abs(nx-target.x)<=1 && Math.abs(ny-target.y)<=1 && !(nx===target.x && ny===target.y)){
-          // 一歩で殴れるなら位置はそのまま殴る
+      if(step){
+        const [nx,ny]=step;
+        // 1ターン1行動：ここでは「移動 or 攻撃」のどちらかだけにする
+        // 既に隣接している場合の攻撃は、上の隣接判定（continue）で処理済み。
+        // ここでは基本的に「移動」し、ターゲットのマスへは踏み込まない（踏み込みそうなら攻撃扱い）。
+        if(target && nx===target.x && ny===target.y){
+          // ターゲットの位置へ踏み込む＝攻撃扱い（同マス移動はしない）
           this.hit(m, target===this.p ? this.p : target, 0);
         }else{
           if(!this.monAt(nx,ny)) { this.moveMonsterNoAnim(m,nx,ny); }
@@ -894,16 +2906,31 @@ this.render();
     const host=$("#invTabsHost"); host.innerHTML="";
     const list=$("#invList"); list.innerHTML="";
 
+    const addGoldLine = ()=>{
+      const gAmt = Math.max(0, num(this.p.gold,0));
+      if(gAmt<=0) return;
+      const d=document.createElement('div'); d.className='item'; d.dataset.gold='1';
+      d.innerHTML=`<div>お金 ${gAmt}G</div><div class="dim">投げると金額ぶんダメージ</div>`;
+      d.onclick=()=>this.openGoldMenu();
+      list.appendChild(d);
+    };
+
+
     const tbtn = $("#invOL .invSortToggle");
     if(tbtn){ tbtn.textContent = this.invTabbed ? "整頓：ON（解除）" : "整頓：OFF（有効）"; tbtn.onclick=()=>{ this.toggleInvTabbed(); }; }
 
     if(!this.invTabbed){
-      if(!this.inv.length){ list.innerHTML='<div class="dim">（空）</div>'; return; }
+      addGoldLine();
+      if(!this.inv.length){
+        if(!list.children.length) list.innerHTML='<div class="dim">（空）</div>';
+        return;
+      }
       this.inv.forEach((it,i)=>{
         let nm=it.name; if((it.type==='weapon'||it.type==='armor') && it.plus) nm+=`+${num(it.plus,0)}`;
         if(it.type==='arrow') nm+=` x${num(it.count,0)}`;
         if( (it.type==='weapon' && this.p.wep===it) || (it.type==='armor' && this.p.arm===it) ) nm+=` (E)`;
         if( it.type==='arrow' && this.p.arrow && this.p.arrow.kind===it.kind ) nm+=` (E)`;
+        if(it.unpaid) nm+=` [売]`;
         const d=document.createElement('div'); d.className='item';
         d.innerHTML=`<div>${nm}</div><div class="dim">${itemDesc(it)}</div>`;
         d.onclick=()=>this.openItemMenu(i); list.appendChild(d);
@@ -932,8 +2959,12 @@ this.render();
 
     const renderTab=(cat)=>{
       list.innerHTML="";
+      addGoldLine();
       const arr = catToItems[cat];
-      if(!arr.length){ list.innerHTML='<div class="dim">（なし）</div>'; return; }
+      if(!arr.length){
+        if(!list.children.length) list.innerHTML='<div class="dim">（なし）</div>';
+        return;
+      }
       const sorted = sortByCategory(cat, [...arr]);
       const grouped = groupDisplay(sorted);
       grouped.forEach(g=>{
@@ -945,6 +2976,7 @@ this.render();
             (it.type==='arrow' && this.p.arrow && this.p.arrow.kind===it.kind) ){
           nm+=" (E)";
         }
+        if(g.members.some(x=>x && x.unpaid)) nm+=` [売]`;
         if(g.count>1) nm+=`  ×${g.count}`;
         const d=document.createElement('div'); d.className='item';
         d.innerHTML=`<div>${nm}</div><div class="dim">${itemDesc(it)}</div>`;
@@ -958,9 +2990,12 @@ this.render();
   flashInv(matchFn){
     if($("#invOL").style.display!=='flex') return;
     const list=$("#invList"); const nodes=[...list.children];
-    nodes.forEach((nd,idx)=>{
+    let invIdx=0;
+    nodes.forEach((nd)=>{
       nd.classList.remove('flash'); void nd.offsetWidth;
-      if(matchFn && matchFn(this.inv[idx])) nd.classList.add('flash');
+      if(nd.dataset && nd.dataset.gold==='1') return;
+      const it = this.inv[invIdx++];
+      if(matchFn && it && matchFn(it)) nd.classList.add('flash');
     });
   }
   toggleInvTabbed(){
@@ -989,11 +3024,11 @@ this.render();
       range.style.display='block'; range.textContent=rangeAsciiFor(it);
     } else { range.style.display='none'; }
     const add=(label,fn)=>{ const b=document.createElement('div'); b.className='pill'; b.textContent=label; b.onclick=()=>{ $("#menuOL").style.display='none'; fn(); }; box.appendChild(b); };
-    if(it.type==='weapon' || it.type==='armor'){ add('装備する', ()=>this.useItemMenu(i)); }
-    else if(it.type==='arrow'){ add('装填する', ()=>this.useItemMenu(i)); }
-    else if(it.type==='pot' || it.type==='potBomb'){ add('壺を開く/使う', ()=>this.useItemMenu(i)); }
+    if(it.type==='weapon' || it.type==='armor'){ add('装備する', ()=>this.useItemMenu(i)); add('投げる', ()=>this.throwItemMenu(i)); }
+    else if(it.type==='arrow'){ add('装填する', ()=>this.useItemMenu(i)); add('投げる', ()=>this.throwItemMenu(i)); }
+    else if(it.type==='pot' || it.type==='potBomb'){ add('壺を開く/使う', ()=>this.useItemMenu(i)); add('投げる', ()=>this.throwItemMenu(i)); }
     else { add('使う/振る', ()=>this.useItemMenu(i)); add('投げる', ()=>this.throwItemMenu(i)); }
-    add('置く（足元に捨てる）', ()=>{ const t=this.itemAt(this.p.x,this.p.y); if(t){ this.msg("ここには置けない"); return;} const item=this.inv.splice(i,1)[0]; item.x=this.p.x; item.y=this.p.y; this.items.push(item); this.msg(`${item.name}を置いた`); this.render(); });
+    add('置く（足元に捨てる）', ()=>{ const t=this.itemAt(this.p.x,this.p.y); if(t){ this.msg("ここには置けない"); return;} const item=this.inv.splice(i,1)[0]; this.onItemPlacedOnFloor(item,this.p.x,this.p.y); this.items.push(item); this.msg(`${item.name}を置いた`); this.render(); });
     add('キャンセル', ()=>{});
     $("#menuOL").style.display='flex';
   }
@@ -1009,8 +3044,39 @@ this.render();
   saveLocal(){ localStorage.setItem('save3', this.getCode()); this.msg("セーブしました"); }
   getCode(){ return 'R3:'+btoa(encodeURIComponent(JSON.stringify({floor:num(this.floor,1), gold:num(this.p.gold,0)}))); }
   loadCode(code){ try{ if(!code.startsWith('R3:')) throw 0; const st=JSON.parse(decodeURIComponent(atob(code.slice(3)))); this.floor=num(st.floor,1)||1; this.p.gold=num(st.gold,0)||0; this.gen(this.floor); this.msg("ロードしました"); }catch(e){ alert("読み込みに失敗しました"); } }
+  escapeToTitle(reason){
+    this.msg(reason||"脱出！");
+    this.saveHoldToTitle();
+    showTitle();
+  }
+
   win(msg){ this.msg(msg||"クリア！"); this.gameEnd(true); }
-  gameOver(){ this.msg(`あなたは倒れた… (到達:${num(this.floor,1)}F)`); this.gameEnd(false); }
+  gameOver(){
+    this.msg(`あなたは倒れた… (到達:${num(this.floor,1)}F)`);
+    // 返還タグ：死亡時に町へ返還（タグは消える）
+    const ret=[];
+    const pullIfTagged=(it)=>{
+      if(!it) return;
+      if(it.returnTag){
+        const ser=Game._serializeItem(it);
+        if(ser) { ser.returnTag=false; ret.push(ser); }
+        // inv/equipから除去
+        if(this.p.wep===it) this.p.wep=null;
+        if(this.p.arm===it) this.p.arm=null;
+        if(this.p.arrow===it) this.p.arrow=null;
+        const idx=this.inv.indexOf(it);
+        if(idx>=0) this.inv.splice(idx,1);
+      }
+    };
+    pullIfTagged(this.p.wep);
+    pullIfTagged(this.p.arm);
+    if(ret.length){
+      this.townLostFound = (this.townLostFound||[]).concat(ret);
+      this.saveTownPersistent();
+      this.msgGreen("タグ装備が町へ返還された！");
+    }
+    this.gameEnd(false);
+  }
   gameEnd(){
     const score=Math.floor(num(this.floor,1)*(this.calcPlayerAtk()+this.calcPlayerDef()+num(this.p.str,10) + (this.p.wep?num(this.p.wep.atk,0)+num(this.p.wep.plus,0):0) + (this.p.arm?num(this.p.arm.def,0)+num(this.p.arm.plus,0):0) + num(this.p.maxHp,1)/2)+num(this.p.gold,0)/10);
     if(num(this.floor,1)>this.bestFloor){ this.bestFloor=num(this.floor,1); localStorage.setItem('bestF',this.bestFloor); }
@@ -1077,12 +3143,71 @@ window.addEventListener('DOMContentLoaded', ()=>{
 
   function syncPickupBtn(){ $('#btnPickupMode').textContent = `自動拾い：${g && g.autoPickup ? 'ON' : 'OFF'}`; }
 
-  function startNew(){ $("#title").style.display='none'; $("#game").style.display='block'; g=new Game(); syncPickupBtn(); g.gen(1); }
-  function startLocal(){ const code=localStorage.getItem('save3'); if(!code){ alert("ローカルセーブがありません"); return; } $("#title").style.display='none'; $("#game").style.display='block'; g=new Game(); syncPickupBtn(); g.loadCode(code); }
+  function startNew(){
+    // 脱出→タイトル状態の引き継ぎがある場合は警告（町の預かり/返還品は残る）
+    try{
+      const hasHold = !!localStorage.getItem(LS_TOWN_HOLD);
+      if(hasHold){
+        const ok = confirm("脱出で持ち帰った所持品/レベルを捨てて『新しく始める』？\n※町の預かり/返還品は残ります");
+        if(!ok) return;
+        localStorage.removeItem(LS_TOWN_HOLD);
+      }
+    }catch(e){}
+    $("#title").style.display='none';
+    $("#game").style.display='block';
+    g=new Game();
+    syncPickupBtn();
+    g.gen(1);
+  }
+  function startLocal(){
+    const code=localStorage.getItem('save3');
+    if(!code){ alert("ローカルセーブがありません"); return; }
+    $("#title").style.display='none';
+    $("#game").style.display='block';
+    g=new Game();
+    syncPickupBtn();
+    g.loadCode(code);
+  }
+
+  function startTown(){
+    $("#title").style.display='none';
+    $("#game").style.display='block';
+    g=new Game();
+    syncPickupBtn();
+    // 脱出で持ち帰った状態があれば読み込み
+    g.loadHoldFromTitle();
+    g.genTown();
+  }
+
+  function startMiniGamesFromTitle(){
+    // タイトルから直接ミニゲーム一覧を開く（町のカジノ一覧と同等）
+    if(!g){
+      g = new Game();
+      syncPickupBtn();
+    }
+    // 脱出→タイトル保持があれば反映（所持金など）
+    try{ if(g.loadHoldFromTitle) g.loadHoldFromTitle(); }catch(e){}
+    // ミニゲーム一覧を表示（町のカジノと同じ）
+    try{
+      if(g.openMiniGameHub) g.openMiniGameHub({fromTitle:true});
+      else g.openTownNpcMenu({role:'casino', name:'カジノ係'});
+    }catch(e){
+      console.error(e);
+      alert('ミニゲームを開けませんでした。コンソールを確認してください。');
+    }
+  }
+
+
   function startCode(){ const code=prompt("セーブコードを入力"); if(!code) return; $("#title").style.display='none'; $("#game").style.display='block'; g=new Game(); syncPickupBtn(); g.loadCode(code.trim()); }
 
   bindTap('#btnNew', startNew);
+  bindTap('#btnTown', startTown);
+  bindTap('#btnMiniGames', startMiniGamesFromTitle);
   bindTap('#btnLocal', startLocal);
+
+  // ショップダイアログ
+  bindTap('#btnPay', ()=>{ if(g) g.onShopDialogPay(); });
+  bindTap('#btnRefuse', ()=>{ if(g) g.onShopDialogRefuse(); });
   bindTap('#btnCode', startCode);
   bindTap('#btnTitle', ()=>{ if(confirm("本当にタイトルに戻りますか？")){ if(g) g.saveLocal(); showTitle(); }});
   bindTap('#btnPickupMode', ()=>{ if(!g) return; g.autoPickup=!g.autoPickup; localStorage.setItem('autoPickup', g.autoPickup?'ON':'OFF'); syncPickupBtn(); g.render(); });
@@ -1091,20 +3216,31 @@ window.addEventListener('DOMContentLoaded', ()=>{
   bindTap('[data-act="inv"]', ()=>{ if(g) g.openInv(); });
   bindTap('#btnCloseInv', ()=>{ if(g) g.closeInv(); });
   bindTap('#btnCloseMenu', ()=>{ $("#menuOL").style.display='none'; });
+  bindTap('#btnCloseTownOL', ()=>{ const ol=$("#townOL"); if(ol) ol.style.display='none'; });
 
   // 行動
   bindTap('[data-act="descend"]', ()=>{ if(g) g.descend(); });
   bindTap('[data-act="shoot"]',   ()=>{ if(g) g.askShoot(); });
+  // 射撃/投げ/杖：方向選択オーバーレイ
+  bindTap('#shootOL [data-dx]', (e)=>{
+    if(!g) return;
+    const b = e.currentTarget;
+    const dx = parseInt(b.getAttribute('data-dx')||'0',10);
+    const dy = parseInt(b.getAttribute('data-dy')||'0',10);
+    g.selectDirFromOL(dx,dy);
+  });
+  bindTap('#shootCancel', ()=>{ if(g) g.cancelTargeting(); });
+
   bindTap('[data-act="save"]',    ()=>{ if(g) g.saveLocal(); });
-  bindTap('[data-act="code"]',    ()=>{ if(g) prompt("セーブコード", g.getCode());
+  bindTap('[data-act="code"]', ()=>{ if(g) prompt("セーブコード", g.getCode()); });
+
   // ★ WAIT FIX: 待機アクション（タップで1T）
-  bindTap('[data-act="wait"]', ()=>{ 
+  bindTap('[data-act="wait"]', ()=>{
     if(!g) return;
     g.msg("待機");
     g.turnStep();
     g.render();
   });
- });
 
   // マップ
   bindTap('#btnMap', ()=>{ if(g){ g.renderFullMap(); $("#mapOL").style.display='flex'; }});
@@ -1173,3 +3309,54 @@ Game.prototype.normalizeShopkeepers = function(){
     }
   }
 };
+
+
+Game.prototype.tileSpan = function(x,y){
+  const key = `${x},${y}`;
+  const chWall = '#';
+  const visible = !!(this.vis[y] && this.vis[y][x]);
+  const data = `data-x="${x}" data-y="${y}"`;
+  if(this.isOut(x,y)) return `<span class="cell" ${data}> </span>`;
+  if(!visible) return `<span class="cell dimFog" ${data}>#</span>`;
+
+  if(this.map[y][x] === chWall){
+    const cls = this.shopWall.has(key) ? 'wall-shop' : (this.mhWall.has(key) ? 'wall-mh' : 'wall');
+    return `<span class="cell ${cls}" ${data}>#</span>`;
+  }
+  const isPlayer = (this.p.x===x && this.p.y===y);
+  const mon = this.monAt(x,y);
+  const items = this.itemsAt(x,y);
+  const stair = (this.map[y][x]==='>');
+
+  if(isPlayer) return `<span class="cell player" ${data}>@</span>`;
+
+  if(mon){
+    const cls = (mon.ai==='town') ? 'mon-town' : ((mon.ai==='shop' && !mon.hostile)?'mon-shop':'mon-enemy');
+    return `<span class="cell ${cls}" ${data}>${mon.ch}</span>`;
+  }
+
+  if(items.length){
+    const it = items[0];
+    const cls = (it.type==='gold' || it.ch==='$') ? 'map-gold' : 'map-item';
+    return `<span class="cell ${cls}" ${data}>${it.ch || '*'}</span>`;
+  }
+
+  // Town tiles: render actual ground/building symbols
+  if(this.mode==='town'){
+    let cls='cell';
+    const t=this.map[y][x];
+    let ch=t;
+    if(t==='>'){ cls+=' stair'; ch='>'; }
+    else if(t==='.') cls+=' town-grass';
+    else if(t==='=') cls+=' town-road';
+    else if(t==='f'){ cls+=' town-flower'; ch='✿'; }
+    else if(t==='T'){ cls+=' town-tree'; ch='♣'; }
+    else if(t==='~'){ cls+=' town-water'; ch='≈'; }
+    else if(['S','B','G','C'].includes(t)) cls+=' town-building';
+    return `<span class="${cls}" ${data}>${ch}</span>`;
+  }
+
+  if(stair) return `<span class="cell stair" ${data}>></span>`;
+  return `<span class="cell" ${data}>${this.nearStairs.has(key)?'·':'.'}</span>`;
+};
+
