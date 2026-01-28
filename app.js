@@ -1531,7 +1531,8 @@ openHighLow(){
         <div class="ppSetup">
           <div class="ppRow"><div>所持金</div><div><b id="ppGoldDisp">${gold}</b>G</div></div>
           <div class="ppRow"><div>ハイスコア</div><div><b>${hs}</b></div></div>
-          <div class="ppRow"><div>賭け金</div><div id="ppBetLine"></div></div>
+                    <div class="ppRow"><div>盤面</div><div id="ppSizeLine"></div></div>
+<div class="ppRow"><div>賭け金</div><div id="ppBetLine"></div></div>
           <div class="dim" style="margin-top:8px; line-height:1.35">
             ※0Gでも遊べます（賭け金10G扱い）。勝てばそのまま次の賭け金にできます。
           </div>
@@ -1544,6 +1545,36 @@ openHighLow(){
     }
 
     const betLine = $("#ppBetLine");
+
+    const sizeLine = $("#ppSizeLine");
+    const ppSizePresets = [
+      {k:'N', label:'標準 6×12', w:6, h:12},
+      {k:'L', label:'大 8×16', w:8, h:16},
+      {k:'XL', label:'圧倒 10×20', w:10, h:20},
+    ];
+    if(!this._ppSizeKey) this._ppSizeKey = 'N';
+
+    const mkSizeBtn = (k,label)=>{
+      const b=document.createElement('div');
+      b.className='btn';
+      b.textContent=label;
+      bindTap(b, ()=>{
+        this._ppSizeKey = k;
+        renderSize();
+      });
+      return b;
+    };
+
+    const renderSize = ()=>{
+      if(!sizeLine) return;
+      sizeLine.innerHTML='';
+      for(const s of ppSizePresets){
+        const b=mkSizeBtn(s.k, s.label);
+        if(s.k===this._ppSizeKey) b.classList.add('sel');
+        sizeLine.appendChild(b);
+      }
+    };
+
     const betOptionsBase = [10,20,50,100,200,500,1000,2000,5000,10000];
     let betOptions = betOptionsBase.filter(v=>v<=gold);
     if(gold<=0) betOptions = [0];
@@ -1579,6 +1610,7 @@ openHighLow(){
         // mkBtn の bindTap は -1 でOK（renderBetに戻る）
       }
     };
+    renderSize();
     renderBet();
 
     // START（iPhoneで押せない/無反応に見える時があるため、リスト内にも配置して確実に拾う）
@@ -1598,7 +1630,7 @@ openHighLow(){
         bet = Math.max(0, Math.min(bet, goldNow));
         if(bet===0) bet = Math.min(10, goldNow);
       }
-      this.startPunyopunyo({bet});
+      this.startPunyopunyo({bet, sizeKey: this._ppSizeKey});
           }catch(err){
         console.error(err && err.stack ? err.stack : err);
         try{ this.msg("START失敗: "+(err && err.message ? err.message : String(err))); }catch(e){}
@@ -1674,10 +1706,20 @@ openHighLow(){
     }
 
     const bet = betStore;
+
+    const ppSizes = {
+      N:{w:6,h:12,label:'標準'},
+      L:{w:8,h:16,label:'大'},
+      XL:{w:10,h:20,label:'圧倒'},
+    };
+    const sizeKey = (cfg && cfg.sizeKey) ? cfg.sizeKey : (this._ppSizeKey || 'N');
+    const sz = ppSizes[sizeKey] || ppSizes.N;
+    const W = sz.w, H = sz.h;
+    this._ppSizeKey = sizeKey;
+
     const nextSpec = this.ppGenPieceSpec();
     this._pp = {
-      w:6, h:12,
-      board: Array.from({length:12}, ()=>Array(6).fill(null)),
+      w:W, h:H,      board: Array.from({length:H}, ()=>Array(W).fill(null)),
       cur:null,
       next: nextSpec.previewColors,
       nextSpec: nextSpec,
@@ -2072,7 +2114,7 @@ openHighLow(){
 
   ppFxStep(dt){
     const pp=this._pp; if(!pp) return;
-    const fx=pp.fx || (pp.fx={particles:[], chainBanner:null, flash:0, shake:0});
+    const fx=pp.fx || (pp.fx={particles:[], chainBanner:null, flash:0, shake:0, rings:[]});
 
     if(fx.flash>0) fx.flash = Math.max(0, fx.flash - dt/260);
     if(fx.shake>0) fx.shake = Math.max(0, fx.shake - dt/220);
@@ -2082,6 +2124,15 @@ openHighLow(){
       if(fx.chainBanner.t > fx.chainBanner.dur){
         fx.chainBanner = null;
       }
+    }
+
+    if(fx.rings && fx.rings.length){
+      for(const r of fx.rings){
+        r.t += dt;
+        const k = r.t / r.dur;
+        r.a = Math.max(0, (r.a0 ?? 1) * (1 - k));
+      }
+      fx.rings = fx.rings.filter(r=>r.t < r.dur && (r.a ?? 0)>0.01);
     }
 
     if(fx.particles && fx.particles.length){
@@ -2096,41 +2147,98 @@ openHighLow(){
       fx.particles = fx.particles.filter(p=>p.t < p.dur && p.a>0.01);
     }
   }
+ppTriggerClearFx(cells, chain){
+  const pp=this._pp; if(!pp) return;
+  const fx=pp.fx || (pp.fx={particles:[], chainBanner:null, flash:0, shake:0, rings:[]});
+  const cell=pp.cell||32;
 
-  ppTriggerClearFx(cells, chain){
-    const pp=this._pp; if(!pp) return;
-    const fx=pp.fx || (pp.fx={particles:[], chainBanner:null, flash:0, shake:0});
-    const cell=pp.cell||32;
+  // big, juicy feedback
+  fx.flash = Math.min(1, fx.flash + 0.55 + 0.15*Math.min(8, chain));
+  fx.shake = Math.min(1, fx.shake + 0.40 + 0.12*Math.min(8, chain));
 
-    fx.flash = Math.min(1, fx.flash + 0.35 + 0.12*Math.min(6, chain));
-    fx.shake = Math.min(1, fx.shake + 0.25 + 0.10*Math.min(6, chain));
+  // Center of the clear (for rings / shockwave)
+  let cxm=0, cym=0;
+  for(const c of cells){
+    cxm += (c.x + 0.5) * cell;
+    cym += (c.y + 0.5) * cell;
+  }
+  if(cells.length){
+    cxm /= cells.length;
+    cym /= cells.length;
+  }else{
+    cxm = (pp.w*cell)/2;
+    cym = (pp.h*cell)/2;
+  }
 
-    if(chain>=2){
-      fx.chainBanner = { chain, t:0, dur: 900 };
+  // Expanding glow rings (clear + chain)
+  fx.rings = fx.rings || [];
+  fx.rings.push({
+    x: cxm, y: cym,
+    r0: cell*0.2,
+    r1: cell*(2.8 + Math.min(7, chain)*0.35),
+    t: 0,
+    dur: 520 + Math.min(7, chain)*120,
+    a0: 0.85
+  });
+
+  if(chain>=2){
+    // chain banner (bigger & longer)
+    fx.chainBanner = { chain, t:0, dur: 1100 + Math.min(6, chain)*120 };
+    // extra ring
+    fx.rings.push({
+      x: cxm, y: cym,
+      r0: cell*0.3,
+      r1: cell*(3.4 + Math.min(7, chain)*0.55),
+      t: 0,
+      dur: 720 + Math.min(7, chain)*160,
+      a0: 0.95
+    });
+  }
+
+  // Particle burst: more, larger, faster (chain amplifies)
+  const baseN = Math.min(22, 10 + Math.floor(cells.length/1.6));
+  const chainBoost = 1 + 0.22*Math.min(8, chain);
+  for(const c of cells){
+    const cx = (c.x + 0.5) * cell;
+    const cy = (c.y + 0.5) * cell;
+
+    const n = Math.floor(baseN * (0.8 + Math.random()*0.45));
+    for(let i=0;i<n;i++){
+      const ang = Math.random()*Math.PI*2;
+      const sp = (0.10 + Math.random()*0.34) * chainBoost;
+      fx.particles.push({
+        x:cx, y:cy,
+        vx:Math.cos(ang)*sp,
+        vy:Math.sin(ang)*sp - (0.08 + Math.random()*0.10),
+        g:0.00052,
+        r:(3 + Math.random()*7) * (chain>=2?1.18:1.0),
+        c:c.c,
+        t:0,
+        dur: 520 + Math.random()*420 + Math.min(7,chain)*60,
+        a:1
+      });
     }
 
-    const baseN = Math.min(10, 4 + Math.floor(cells.length/3));
-    for(const c of cells){
-      const cx = (c.x + 0.5) * cell;
-      const cy = (c.y + 0.5) * cell;
-      const n = baseN + (chain>=2 ? 4 : 0);
-      for(let i=0;i<n;i++){
-        const ang = Math.random()*Math.PI*2;
-        const sp = (0.08 + Math.random()*0.22) * (1 + 0.25*Math.min(6,chain));
-        fx.particles.push({
-          x:cx, y:cy,
-          vx:Math.cos(ang)*sp,
-          vy:Math.sin(ang)*sp - 0.05,
-          g:0.00045,
-          r:2 + Math.random()*4,
-          c:c.c,
-          t:0,
-          dur: 520 + Math.random()*320,
-          a:1
-        });
-      }
+    // sparkle streaks (few)
+    const sN = 2 + Math.floor(Math.random()*3) + Math.floor(Math.min(6,chain)/2);
+    for(let k=0;k<sN;k++){
+      const ang = Math.random()*Math.PI*2;
+      const sp = (0.22 + Math.random()*0.38) * chainBoost;
+      fx.particles.push({
+        x:cx, y:cy,
+        vx:Math.cos(ang)*sp,
+        vy:Math.sin(ang)*sp - 0.10,
+        g:0.00035,
+        r:1.5 + Math.random()*2.5,
+        c:c.c,
+        t:0,
+        dur: 420 + Math.random()*260,
+        a:1
+      });
     }
   }
+}
+
 
   ppAnimStep(dt){
     const pp=this._pp; if(!pp || !pp.anim) return;
@@ -2253,64 +2361,56 @@ openHighLow(){
     pp.chain=0;
     this.ppResolveAsync();
   }
+async ppResolveAsync(){
+  const pp=this._pp; if(!pp) return;
+  const sleep = (ms)=>new Promise(r=>setTimeout(r,ms));
+  try{
+    // First settle after locking (smooth)
+    await this.ppAnimateGravity();
 
+    while(true){
+      const cleared = this.ppClearGroups();
+      if(cleared.count<=0) break;
 
+      pp.chain += 1;
 
-  async ppResolveAsync(){
-    const pp=this._pp; if(!pp) return;
-    const sleep = (ms)=>new Promise(r=>setTimeout(r,ms));
-    try{
-      while(true){
-        await this.ppAnimateGravity();
+      // score
+      const add = this.ppScoreAdd(cleared.count, pp.chain);
+      pp.score = num(pp.score,0) + add;
 
-        const cleared = this.ppClearGroups();
-        if(cleared.count<=0) break;
-
-        pp.chain += 1;
-
-        // FX：連鎖バナー（派手表示）
-        this.ppFxChain(pp.chain);
-
-        // score
-        const add = this.ppScoreAdd(cleared.count, pp.chain);
-        pp.score = num(pp.score,0) + add;
-
-        // clear cells
-        for(const c of cleared.cells){
-          if(c.y>=0 && c.y<pp.h && c.x>=0 && c.x<pp.w){
-            pp.board[c.y][c.x] = null;
-          }
+      // clear cells
+      for(const c of cleared.cells){
+        if(c.y>=0 && c.y<pp.h && c.x>=0 && c.x<pp.w){
+          pp.board[c.y][c.x] = null;
         }
-        this.ppSanitizeBoard();
-
-        // FX：消去パーティクル（派手）
-        this.ppFxBurst(cleared.cells);
-
-        // small pause
-        $("#ppScore") && ($("#ppScore").textContent = pp.score);
-        $("#ppChain") && ($("#ppChain").textContent = pp.chain);
-        $("#ppHigh") && ($("#ppHigh").textContent = this.getPunyopunyoHighScore());
-
-        this.ppDraw();
-        await sleep(90);
       }
-    }catch(e){
-      // if resolve crashes, avoid freeze (pp.resolving stuck) and keep game recoverable
-      try{
-        const msg = (e && (e.stack||e.message)) ? (e.stack||e.message) : String(e);
-        console.error("ppResolveAsync error:", msg);
-      }catch(_){}
-    }finally{
-      pp.resolving=false;
-    }
+      this.ppSanitizeBoard();
 
-    // spawn next if still playable
-    if(pp.over) return;
-    if(!pp.cur){
-      this.spawnPunyopunyo();
+      // FX (bigger)
+      this.ppTriggerClearFx(cleared.cells, pp.chain);
+
+      // tiny pause, then gravity (smooth) -> this is the "extra gravity after clear"
+      await sleep(80);
+      await this.ppAnimateGravity();
     }
-    this.ppDraw();
+  }catch(e){
+    // Safari sometimes prints {} for Error; prefer message+stack
+    try{
+      const msg = (e && (e.stack || e.message)) ? (e.stack || e.message) : String(e);
+      console.error("ppResolveAsync error:", msg);
+    }catch(_){}
+  }finally{
+    pp.resolving=false;
   }
+
+  // spawn next if still playable
+  if(pp.over) return;
+  if(!pp.cur){
+    this.spawnPunyopunyo();
+  }
+  this.ppDraw();
+}
+
 
 
   ppApplyGravity(){
@@ -2477,13 +2577,44 @@ const mul = this.ppCalcMultiplier(pp.score);
       ctx.beginPath(); ctx.moveTo(0,y*cell+0.5); ctx.lineTo(W,y*cell+0.5); ctx.stroke();
     }
 
-    const palette=[
+    // rings / shockwaves (behind pieces)
+if(fx && fx.rings && fx.rings.length){
+  for(const r of fx.rings){
+    const t = clamp(r.t / r.dur, 0, 1);
+    const ease = 1 - Math.pow(1-t, 2);
+    const rad = (r.r0 || 0) + ((r.r1 || 0) - (r.r0 || 0)) * ease;
+    const a = Math.max(0, (r.a ?? 0.8) * (1 - t));
+    ctx.save();
+    ctx.globalAlpha = a;
+    const g = ctx.createRadialGradient(r.x, r.y, 0, r.x, r.y, rad);
+    g.addColorStop(0,'rgba(255,255,255,0.0)');
+    g.addColorStop(0.35,'rgba(255,255,255,0.18)');
+    g.addColorStop(0.65,'rgba(120,240,255,0.16)');
+    g.addColorStop(1,'rgba(255,255,255,0.0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(r.x, r.y, rad, 0, Math.PI*2);
+    ctx.fill();
+    // thin rim
+    ctx.strokeStyle='rgba(255,255,255,0.22)';
+    ctx.lineWidth=2;
+    ctx.beginPath();
+    ctx.arc(r.x, r.y, Math.max(0, rad*0.98), 0, Math.PI*2);
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
+const palette=[
       ['rgba(255,90,120,1)','rgba(255,190,205,0.9)'],  // red/pink
       ['rgba(90,210,255,1)','rgba(190,245,255,0.9)'],  // cyan
       ['rgba(120,255,170,1)','rgba(210,255,235,0.9)'], // green
       ['rgba(255,220,110,1)','rgba(255,245,205,0.92)'],// yellow
       ['rgba(175,120,255,1)','rgba(230,210,255,0.92)'],// purple
     ];
+
+
+    const colors = palette.map(p=>p[0]);
 
     const drawP=(x,y,c,ghost=false)=>{
       const px=x*cell, py=y*cell;
@@ -2569,26 +2700,57 @@ const mul = this.ppCalcMultiplier(pp.score);
     }
 
     if(fx && fx.chainBanner){
-      const t = fx.chainBanner.t / fx.chainBanner.dur;
-      const a = Math.max(0, 1 - t);
-      const scale = 1.15 + 0.35*Math.sin(Math.min(1,t)*Math.PI);
-      ctx.save();
-      ctx.globalAlpha = a;
-      ctx.translate(W/2, H*0.35);
-      ctx.scale(scale, scale);
-      ctx.textAlign='center';
-      ctx.textBaseline='middle';
-      ctx.font = 'bold ' + Math.floor(cell*1.05) + 'px system-ui, -apple-system, sans-serif';
-      ctx.shadowColor='rgba(0,0,0,0.55)';
-      ctx.shadowBlur=18;
-      ctx.fillStyle='rgba(255,255,255,0.95)';
-      ctx.fillText(fx.chainBanner.chain + ' 連鎖!!', 0, 0);
-      ctx.shadowBlur=0;
-      ctx.strokeStyle='rgba(64,200,255,0.75)';
-      ctx.lineWidth=4;
-      ctx.strokeText(fx.chainBanner.chain + ' 連鎖!!', 0, 0);
-      ctx.restore();
-    }
+  const t = fx.chainBanner.t / fx.chainBanner.dur;
+  const a = Math.max(0, 1 - t);
+  const bump = Math.sin(Math.min(1,t)*Math.PI);
+  const scale = 1.35 + 0.55*bump;
+  const rot = (Math.sin(t*8*Math.PI))*0.03;
+  const chain = fx.chainBanner.chain;
+
+  ctx.save();
+  ctx.globalAlpha = a;
+  ctx.translate(W/2, H*0.33);
+  ctx.rotate(rot);
+  ctx.scale(scale, scale);
+  ctx.textAlign='center';
+  ctx.textBaseline='middle';
+
+  const fs = Math.floor(cell*1.45);
+  ctx.font = '900 ' + fs + 'px system-ui, -apple-system, sans-serif';
+
+  // neon glow outline
+  ctx.lineJoin='round';
+  ctx.lineWidth = Math.max(5, Math.floor(cell*0.22));
+  ctx.shadowColor='rgba(0,0,0,0.65)';
+  ctx.shadowBlur=22;
+
+  // color cycles by chain
+  const hue = (190 + chain*36) % 360;
+  ctx.strokeStyle = 'hsla(' + hue + ', 95%, 62%, 0.95)';
+  ctx.strokeText(chain + ' 連鎖!!', 0, 0);
+
+  // inner bright stroke
+  ctx.lineWidth = Math.max(2, Math.floor(cell*0.10));
+  ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+  ctx.strokeText(chain + ' 連鎖!!', 0, 0);
+
+  // fill gradient
+  const g = ctx.createLinearGradient(-cell*4, -cell, cell*4, cell);
+  g.addColorStop(0, 'rgba(255,255,255,0.98)');
+  g.addColorStop(0.55, 'hsla(' + hue + ', 100%, 85%, 0.98)');
+  g.addColorStop(1, 'rgba(255,255,255,0.98)');
+  ctx.fillStyle = g;
+  ctx.shadowBlur=0;
+  ctx.fillText(chain + ' 連鎖!!', 0, 0);
+
+  // small subtext
+  ctx.globalAlpha = a * 0.85;
+  ctx.font = '800 ' + Math.floor(cell*0.72) + 'px system-ui, -apple-system, sans-serif';
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  ctx.fillText('CHAIN BONUS!', 0, Math.floor(cell*1.05));
+
+  ctx.restore();
+}
 
     if(fx && fx.flash>0){
       ctx.save();
