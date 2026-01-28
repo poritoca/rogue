@@ -365,6 +365,64 @@ button, .pad, .act, .btn { touch-action: manipulation; }
 /* 盤面の周囲を軽く整える */
 .msWrap{ margin-top:10px; }
 
+
+/* --- Town Punyopunyo (Puyo-like) --- */
+.ppWrap{display:flex; flex-direction:column; gap:10px; align-items:center; justify-content:center; margin-top:6px;}
+.ppHud{width:min(520px, 92vw); padding:10px 12px; border-radius:14px;
+  background:linear-gradient(180deg, rgba(22,26,34,.82), rgba(10,12,16,.86));
+  border:1px solid rgba(120,227,255,.16);
+  box-shadow:0 10px 30px rgba(0,0,0,.35), 0 0 0 1px rgba(255,255,255,.04) inset;
+}
+.ppHudRow{display:flex; justify-content:space-between; align-items:center; gap:12px; font-size:13px;}
+.ppNextDot{display:inline-block; width:14px; height:14px; border-radius:999px; margin-left:6px;
+  box-shadow:0 0 0 1px rgba(0,0,0,.35), 0 6px 14px rgba(0,0,0,.35) inset, 0 0 18px rgba(120,227,255,.08);
+}
+.ppCanvas{
+  border-radius:16px;
+  border:1px solid rgba(120,227,255,.18);
+  box-shadow:0 14px 40px rgba(0,0,0,.45), 0 0 0 1px rgba(255,255,255,.04) inset;
+  background:linear-gradient(180deg, rgba(18,22,30,.65), rgba(10,10,12,.78));
+  backdrop-filter: blur(8px);
+  touch-action:none;
+  -webkit-user-select:none;
+  user-select:none;
+}
+.ppSetup{width:100%; max-width:520px;}
+.ppRow{display:flex; justify-content:space-between; align-items:center; gap:10px; padding:6px 0;}
+#ppBetLine .btn{margin-right:8px;}
+.ppC0{background:radial-gradient(circle at 30% 25%, rgba(255,190,205,.95), rgba(255,90,120,1) 55%, rgba(0,0,0,.2));}
+.ppC1{background:radial-gradient(circle at 30% 25%, rgba(190,245,255,.95), rgba(90,210,255,1) 55%, rgba(0,0,0,.2));}
+.ppC2{background:radial-gradient(circle at 30% 25%, rgba(210,255,235,.95), rgba(120,255,170,1) 55%, rgba(0,0,0,.2));}
+.ppC3{background:radial-gradient(circle at 30% 25%, rgba(255,245,205,.95), rgba(255,220,110,1) 55%, rgba(0,0,0,.2));}
+.ppC4{background:radial-gradient(circle at 30% 25%, rgba(230,210,255,.95), rgba(175,120,255,1) 55%, rgba(0,0,0,.2));}
+
+/* ぷよ操作ボタン：押しやすさ最優先 */
+.ppCtrlWrap{width:min(520px, 92vw); display:flex; flex-direction:column; gap:12px; margin-top:10px;}
+.ppCtrlRow{display:flex; justify-content:center; gap:12px;}
+.ppBtn{
+  flex:1;
+  min-width:92px;
+  padding:14px 16px;
+  font-size:17px;
+  border-radius:16px;
+  text-align:center;
+  border:1px solid rgba(120,227,255,.16);
+  background:
+    radial-gradient(120% 120% at 20% 15%, rgba(255,255,255,.14), rgba(255,255,255,0) 55%),
+    linear-gradient(180deg, rgba(28,34,44,.78), rgba(10,12,16,.86));
+  box-shadow:0 10px 26px rgba(0,0,0,.45), 0 0 0 1px rgba(255,255,255,.04) inset;
+  touch-action:manipulation;
+  -webkit-user-select:none;
+  user-select:none;
+}
+.ppBtn:active{transform:translateY(1px); filter:brightness(1.08);}
+.ppBtn.ppWide{min-width:92px;}
+
+@media (max-width:420px){
+  .ppBtn{min-width:86px; font-size:16px; padding:16px 10px;}
+  .ppCtrlRow{gap:14px;}
+}
+
 </style>
 
 </head>

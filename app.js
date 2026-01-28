@@ -141,6 +141,8 @@ const TOWN_H = 80;
 const LS_TOWN_HOLD = 'townHold_v1';
 const LS_TOWN_STORAGE = 'townStorage_v1';
 const LS_TOWN_LOSTFOUND = 'townLostFound_v1';
+const LS_PUNYO_HS = 'punyopunyoHigh_v1';
+const LS_GLOBAL_GOLD = 'townGlobalGold_v1';
 const VIEW_W=23, VIEW_H=11; 
 const MAX_FLOOR=999; 
 const INV_BASE_MAX=30;           // 所持上限30
@@ -403,6 +405,28 @@ class Game{
   saveTownPersistent(){
     try{ localStorage.setItem(LS_TOWN_STORAGE, JSON.stringify(this.townStorage||[])); }catch(e){}
     try{ localStorage.setItem(LS_TOWN_LOSTFOUND, JSON.stringify(this.townLostFound||[])); }catch(e){}
+  }
+
+  // ===== Global gold wallet (for title minigames etc.) =====
+  loadGlobalGold(){
+    try{
+      const v = parseInt(localStorage.getItem(LS_GLOBAL_GOLD)||'0',10);
+      if(Number.isFinite(v) && v>=0) this.p.gold = Math.max(num(this.p.gold,0), v);
+    }catch(e){}
+  }
+  saveGlobalGold(){
+    try{ localStorage.setItem(LS_GLOBAL_GOLD, String(Math.max(0, num(this.p.gold,0)))); }catch(e){}
+  }
+  awardGold(delta){
+    const d=num(delta,0);
+    if(!d) return;
+    this.p.gold = Math.max(0, num(this.p.gold,0) + d);
+    this.afterGoldChange();
+  }
+  afterGoldChange(){
+    // タイトル/町/ミニゲームなど「ダンジョン外」でも反映されるように保存
+    try{ this.saveHoldToTitle(); }catch(e){}
+    try{ this.saveGlobalGold(); }catch(e){}
   }
 
   saveHoldToTitle(){
@@ -870,6 +894,7 @@ this.render();
             const cost=num(it.price,0);
             if(num(this.p.gold,0)<cost){ this.msg("お金が足りない"); return; }
             this.p.gold = num(this.p.gold,0)-cost;
+      this.afterGoldChange();
             const bought=clone(it); delete bought.price;
             try{ bought.ch=itemChar(bought); }catch(e){}
             this.inv.push(bought);
@@ -896,6 +921,7 @@ this.render();
               if(this.p.wep===it || this.p.arm===it || this.p.arrow===it){ this.msg("装備中は売れない"); return; }
               this.inv.splice(this.inv.indexOf(it),1);
               this.p.gold = num(this.p.gold,0)+price;
+      this.afterGoldChange();
               this.msg(`${it.name}を売った`);
               renderSell(); this.render();
             };
@@ -1062,6 +1088,7 @@ this.render();
           if(tagged){ this.msg("すでに付与済"); return; }
           if(num(this.p.gold,0)<FEE){ this.msg("お金が足りない"); return; }
           this.p.gold=num(this.p.gold,0)-FEE;
+      this.afterGoldChange();
           it.returnTag=true;
           this.msg(`${it.name}にタグを付けた`);
           this.render();
@@ -1091,6 +1118,7 @@ this.render();
       addGame("10秒ストップ","10秒に近づけるだけ（無料）。途中で見えなくなるモードあり", ()=>{ this.openStop10(); });
       addGame("マインスイーパー","ゴールドで勝負（0GでもOK：賭け金10G扱い）。サイズ/爆弾数で難易度変化（賭け金×倍率）", ()=>{ this.openMinesweeperSetup(); });
       addGame("反射神経","合図が出た瞬間に止める（0GでもOK：賭け金10G扱い）。速いほど倍率UP", ()=>{ this.openReaction(); });
+      addGame("ぷんよぷんよ","連鎖でスコア増。ゴールド獲得＆ハイスコア保存", ()=>{ this.openPunyopunyoSetup(); });
       $("#townActions").innerHTML='';
       addAction("閉じる", ()=>{ close(); this.render(); });
       show();
@@ -1213,6 +1241,7 @@ openHighLow(){
       }
       // 賭け金を先に支払う
       this.p.gold = g0 - effBet;
+      this.afterGoldChange();
     }
 
     // 次回も同額で賭けられるよう保存
@@ -1224,6 +1253,7 @@ openHighLow(){
     if(win){
       const gain = Math.max(0, Math.floor(effBet * mult));
       this.p.gold = num(this.p.gold, 0) + gain;
+      this.afterGoldChange();
       this.msg(`当たり！ ${nxt} -> +${gain}G（賭け金${effBet}G / 倍率${mult.toFixed(2)}）`);
     }else{
       this.msg(`外れ… ${nxt}`);
@@ -1293,6 +1323,7 @@ openHighLow(){
       if(blind) reward = Math.floor(reward * 1.15);
       if(reward>0){
         this.p.gold = num(this.p.gold,0)+reward;
+      this.afterGoldChange();
         this.msg(`報酬 +${reward}G`);
       }else{
         this.msg("参加賞");
@@ -1400,6 +1431,7 @@ openHighLow(){
         effBet = Math.min(Math.max(1, effBet), g0);
         // 賭け金支払い
         this.p.gold = g0 - effBet;
+      this.afterGoldChange();
       }
       this._rxBet = effBet;
       bet = effBet;
@@ -1443,6 +1475,8 @@ openHighLow(){
       else mult = 0.95;
       const gain = Math.max(0, Math.floor(bet * mult));
       this.p.gold = num(this.p.gold,0) + gain;
+      this.afterGoldChange();
+      this.afterGoldChange();
       this.msg(`報酬 +${gain}G（賭け金${bet}G / 倍率${mult.toFixed(2)}）`);
       this.render();
       setSub(`賭け金:${bet}G${isZeroSpecial?'（0G特別）':''} / 所持金:${num(this.p.gold,0)}G`);
@@ -1456,6 +1490,1130 @@ openHighLow(){
     addBtn('戻る', ()=>{ if(waitTimer){ clearTimeout(waitTimer); waitTimer=null; } waiting=false; armed=false; this.openTownNpcMenu(this.mons.find(m=>m.ai==='town' && m.role==='casino')); });
 
     if(ol) ol.style.display='flex';
+  }
+
+
+
+
+  // ===== MiniGame: ぷんよぷんよ（ぷよぷよ風） =====
+  getPunyopunyoHighScore(){
+    try{ return num(JSON.parse(localStorage.getItem(LS_PUNYO_HS)||'0'),0); }catch(e){ return 0; }
+  }
+  setPunyopunyoHighScore(v){
+    try{ localStorage.setItem(LS_PUNYO_HS, JSON.stringify(num(v,0))); }catch(e){}
+  }
+
+  // セットアップ（賭け金選択）
+
+  // セットアップ（賭け金選択）
+  openPunyopunyoSetup(){
+    const close = ()=>{ const ol=$("#townOL"); if(ol) ol.style.display='none'; };
+    const show  = ()=>{ const ol=$("#townOL"); if(ol) ol.style.display='flex'; };
+    const set   = (title,sub)=>{
+      const t=$("#townTitle"); if(t) t.textContent=title;
+      const s=$("#townSub")||$("#townDesc"); if(s) s.textContent=sub||'';
+    };
+
+    // タイトルから直接ミニゲームを開いている場合など、保持/財布を読み込む
+    try{ if(this.loadHoldFromTitle) this.loadHoldFromTitle(); }catch(e){}
+    try{ if(this.loadGlobalGold) this.loadGlobalGold(); }catch(e){}
+
+    const gold = num(this.p.gold,0);
+    const hs = this.getPunyopunyoHighScore();
+    const lastBet = num(this._ppBet, 0);
+
+    set("ぷんよぷんよ","連鎖でスコアUP。報酬は賭け金×実力倍率");
+
+    const tabs=$("#townTabs"); if(tabs) tabs.innerHTML='';
+    const list=$("#townList");
+    if(list){
+      list.innerHTML = `
+        <div class="ppSetup">
+          <div class="ppRow"><div>所持金</div><div><b id="ppGoldDisp">${gold}</b>G</div></div>
+          <div class="ppRow"><div>ハイスコア</div><div><b>${hs}</b></div></div>
+          <div class="ppRow"><div>賭け金</div><div id="ppBetLine"></div></div>
+          <div class="dim" style="margin-top:8px; line-height:1.35">
+            ※0Gでも遊べます（賭け金10G扱い）。勝てばそのまま次の賭け金にできます。
+          </div>
+
+          <div style="margin-top:10px; display:flex; justify-content:center; gap:10px; flex-wrap:wrap">
+            <div class="btn" id="ppStartBtn">START</div>
+          </div>
+        </div>
+      `;
+    }
+
+    const betLine = $("#ppBetLine");
+    const betOptionsBase = [10,20,50,100,200,500,1000,2000,5000,10000];
+    let betOptions = betOptionsBase.filter(v=>v<=gold);
+    if(gold<=0) betOptions = [0];
+    if(gold>0 && lastBet>0 && !betOptions.includes(lastBet) && lastBet<=gold) betOptions.unshift(lastBet);
+
+    const mkBtn = (v,label)=>{
+      const b=document.createElement('div');
+      b.className='btn';
+      b.textContent=label || (v===0?'10G扱い':(' '+v+'G '));
+      bindTap(b, ()=>{
+        this._ppBet = v;
+        renderBet();
+      });
+      return b;
+    };
+
+    const renderBet = ()=>{
+      if(!betLine) return;
+      betLine.innerHTML='';
+      const cur = (gold<=0) ? 0 : (num(this._ppBet,0) || Math.min( (lastBet>0 && lastBet<=gold)?lastBet:10, gold));
+      if(gold>0 && !this._ppBet) this._ppBet = cur;
+      if(gold<=0) this._ppBet = 0;
+
+      for(const v of betOptions){
+        const b=mkBtn(v);
+        if(v===num(this._ppBet,0)) b.classList.add('sel');
+        betLine.appendChild(b);
+      }
+      if(gold>0){
+        const allBtn = mkBtn(-1, '全額');
+        if(num(this._ppBet,0)===-1) allBtn.classList.add('sel');
+        betLine.appendChild(allBtn);
+        // mkBtn の bindTap は -1 でOK（renderBetに戻る）
+      }
+    };
+    renderBet();
+
+    // START（iPhoneで押せない/無反応に見える時があるため、リスト内にも配置して確実に拾う）
+    const doStart = ()=>{
+      try{
+      // 最新の財布を反映（タイトル放置→別ミニゲームなどのズレ対策）
+      try{ if(this.loadGlobalGold) this.loadGlobalGold(); }catch(e){}
+      const goldNow = num(this.p.gold,0);
+
+      const betRaw = num(this._ppBet,0);
+      let bet = betRaw;
+
+      if(goldNow<=0){
+        bet = 0; // 10G扱い
+      }else{
+        if(betRaw===-1) bet = goldNow;
+        bet = Math.max(0, Math.min(bet, goldNow));
+        if(bet===0) bet = Math.min(10, goldNow);
+      }
+      this.startPunyopunyo({bet});
+          }catch(err){
+        console.error(err && err.stack ? err.stack : err);
+        try{ this.msg("START失敗: "+(err && err.message ? err.message : String(err))); }catch(e){}
+      }
+    };
+
+    // リスト内 START ボタン
+    const ppStartBtn = $("#ppStartBtn");
+    if(ppStartBtn){
+      bindTap(ppStartBtn, ()=>doStart());
+      ppStartBtn.addEventListener('click', (e)=>{ e.preventDefault(); doStart(); });
+    }
+
+    const actions=$("#townActions");
+    if(actions) actions.innerHTML='';
+    const addBtn=(label,fn)=>{
+      const b=document.createElement('div');
+      b.className='btn';
+      b.textContent=label;
+      bindTap(b, ()=>fn());
+      if(actions) actions.appendChild(b);
+      return b;
+    };
+
+    addBtn("戻る", ()=>{
+      // 町のカジノ一覧に戻す（タイトルから来た場合でも同じUI）
+      this.openTownNpcMenu(this.mons.find(m=>m.ai==='town' && m.role==='casino') || {role:'casino',name:'カジノ係'});
+    });
+
+    addBtn("閉じる", ()=>{
+      close();
+      this.render();
+    });
+
+    show();
+  }
+
+  // 報酬倍率（HiGH&LOWより良く）
+  ppCalcMultiplier(score){
+    // だいたい 1.2〜3.0 の範囲（上限）
+    const m = 1.20 + Math.min(1.80, score/6000);
+    return Math.max(1.20, Math.min(3.00, m));
+  }
+
+  startPunyopunyo(cfg){
+    const betReq = num(cfg?.bet,0);
+    const goldNow = num(this.p.gold,0);
+
+    // 実際に賭けに使う金額（0G時は 10G扱い）
+    let effBet = betReq;
+    let betStore = betReq;
+
+    if(goldNow<=0){
+      // 0Gなら、賭け金未指定/0 は 10G扱い（差し引きはしない）
+      if(betReq<=0){
+        effBet = 10;
+        betStore = 0; // UI上は「10G扱い」
+      }else{
+        effBet = Math.max(0, betReq);
+        betStore = Math.max(0, betReq);
+      }
+      this._ppBet = 0;
+    }else{
+      if(betReq===-1) effBet = goldNow; // 全額
+      effBet = Math.max(0, Math.min(effBet, goldNow));
+      if(effBet===0) effBet = Math.min(10, goldNow);
+      betStore = effBet;
+
+      // 差し引き（開始時に支払う）
+      this.p.gold = goldNow - effBet;
+      this.afterGoldChange();
+      this._ppBet = betStore;
+    }
+
+    const bet = betStore;
+    const nextSpec = this.ppGenPieceSpec();
+    this._pp = {
+      w:6, h:12,
+      board: Array.from({length:12}, ()=>Array(6).fill(null)),
+      cur:null,
+      next: nextSpec.previewColors,
+      nextSpec: nextSpec,
+      fallMs: 320, // そこそこ早め
+      soft:false,
+      score:0,
+      chain:0,
+      resolving:false,
+      over:false,
+      bet,
+      effBet,
+      paid:false, // 精算済
+      lastTs:0,
+      acc:0,
+      anim:null,
+      animResolve:null,
+      fx:{particles:[], chainBanner:null, flash:0, shake:0},
+    };
+    this.spawnPunyopunyo();
+    this.openPunyopunyoPlay();
+  }
+
+  ppRandColor(){
+    // 見分けやすい 5 色
+    const cs=[0,1,2,3,4];
+    return cs[rand(0, cs.length-1)];
+  }
+
+
+  // ぷんよぷんよ：次ピース仕様（2個落下に加えて、たまに3-6ブロックの大ピース）
+  ppGenPieceSpec(){
+    const r = Math.random();
+    let n = 2;
+    if(r < 0.20) n = 3;
+    else if(r < 0.29) n = 4;
+    else if(r < 0.297) n = 5;
+    else if(r < 0.300) n = 6;
+
+    if(n === 2){
+      const a = this.ppRandColor();
+      const b = this.ppRandColor();
+      const blocks = [
+        {dx:0, dy:0, c:a, pivot:true},
+        {dx:0, dy:-1, c:b, pivot:false},
+      ];
+      return { n, blocks, previewColors:[a,b] };
+    }
+
+    const blocks = this.ppGenRandomClusterBlocks(n);
+    const previewColors = [
+      blocks[0]?.c ?? this.ppRandColor(),
+      blocks[1]?.c ?? blocks[0]?.c ?? this.ppRandColor(),
+    ];
+    return { n, blocks, previewColors };
+  }
+
+  // ランダム生成：連結したブロックの集合を作る（固定パターン非依存）
+  ppGenRandomClusterBlocks(n){
+    const dirs = [[1,0],[-1,0],[0,1],[0,-1]];
+    const maxSpan = (n<=4) ? 3 : 4;
+    const tries = 80;
+
+    const makeOnce = ()=>{
+      const set = new Set(["0,0"]);
+      const cells = [{dx:0, dy:0}];
+
+      const bounds = ()=>{
+        let minX=999, maxX=-999, minY=999, maxY=-999;
+        for(const c of cells){
+          minX = Math.min(minX, c.dx); maxX = Math.max(maxX, c.dx);
+          minY = Math.min(minY, c.dy); maxY = Math.max(maxY, c.dy);
+        }
+        return {w:(maxX-minX+1), h:(maxY-minY+1)};
+      };
+
+      while(cells.length < n){
+        const base = cells[rand(0, cells.length-1)];
+        const d = dirs[rand(0, dirs.length-1)];
+        const nx = base.dx + d[0];
+        const ny = base.dy + d[1];
+        const key = nx + "," + ny;
+        if(set.has(key)) continue;
+
+        cells.push({dx:nx, dy:ny});
+        const b = bounds();
+        if(b.w > maxSpan || b.h > maxSpan){
+          cells.pop();
+          continue;
+        }
+        set.add(key);
+      }
+      return cells;
+    };
+
+    let cells = null;
+    for(let t=0;t<tries;t++){
+      const cand = makeOnce();
+      if(cand && cand.length === n){ cells = cand; break; }
+    }
+    if(!cells){
+      cells = Array.from({length:n}, (_,i)=>({dx:0, dy:-i}));
+    }
+
+    const baseColor = this.ppRandColor();
+    const blocks = cells.map((c, i)=>{
+      let col = baseColor;
+      if(i>0 && Math.random() > 0.70){
+        let alt = this.ppRandColor();
+        let guard=10;
+        while(alt===baseColor && guard-- > 0) alt = this.ppRandColor();
+        col = alt;
+      }
+      return {dx:c.dx, dy:c.dy, c:col, pivot:(c.dx===0 && c.dy===0)};
+    });
+
+    blocks.sort((a,b)=> (b.pivot?1:0) - (a.pivot?1:0));
+    if(!blocks[0].pivot) blocks[0].pivot = true;
+
+    return blocks;
+  }
+
+  ppRotVec(dx,dy,o){
+    const r = ((o%4)+4)%4;
+    if(r===0) return {x:dx, y:dy};
+    if(r===1) return {x:-dy, y:dx};
+    if(r===2) return {x:-dx, y:-dy};
+    return {x:dy, y:-dx};
+  }
+
+
+  ppCellsOfCur(cur){
+    const x=cur.x, y=cur.y;
+    const o=((cur.o%4)+4)%4;
+
+    if(cur.blocks && Array.isArray(cur.blocks)){
+      const out=[];
+      for(const b of cur.blocks){
+        const v = this.ppRotVec(b.dx, b.dy, o);
+        out.push({x:x+v.x, y:y+v.y, c:b.c, pivot:!!b.pivot});
+      }
+      return out;
+    }
+
+    let dx=0, dy=-1;
+    if(o===0){ dx=0; dy=-1; }
+    if(o===1){ dx=1; dy=0; }
+    if(o===2){ dx=0; dy=1; }
+    if(o===3){ dx=-1; dy=0; }
+    return [
+      {x:x, y:y, c:cur.a, pivot:true},
+      {x:x+dx, y:y+dy, c:cur.b, pivot:false},
+    ];
+  }
+
+  ppIsInside(x,y){
+    const pp=this._pp;
+    return x>=0 && x<pp.w && y<pp.h; // y can be negative while falling
+  }
+
+  // ぷんよぷんよ：盤面外アクセス防止（大ピース＋連鎖重力の安全策）
+  ppSanitizeBoard(){
+    const pp=this._pp;
+    if(!pp || !pp.board) return;
+    // 行数補正
+    if(!Array.isArray(pp.board) || pp.board.length !== pp.h){
+      const old = Array.isArray(pp.board) ? pp.board : [];
+      pp.board = Array.from({length:pp.h}, (_,y)=> Array.isArray(old[y]) ? old[y].slice(0,pp.w) : Array(pp.w).fill(null));
+    }
+    for(let y=0;y<pp.h;y++){
+      if(!Array.isArray(pp.board[y])) pp.board[y] = Array(pp.w).fill(null);
+      if(pp.board[y].length !== pp.w){
+        pp.board[y] = (pp.board[y]||[]).slice(0,pp.w);
+        while(pp.board[y].length < pp.w) pp.board[y].push(null);
+      }
+      for(let x=0;x<pp.w;x++){
+        if(pp.board[y][x] === undefined) pp.board[y][x] = null;
+      }
+    }
+  }
+
+  ppWriteCell(x,y,c){
+    const pp=this._pp;
+    if(!pp) return false;
+    if(x<0 || x>=pp.w || y<0 || y>=pp.h){
+      // ここに来るのは基本的にバグ/境界ケース。強制終了ではなくゲーム終了扱いにして落ちないようにする。
+      pp.over = true;
+      try{ this.msg('ぷんよぷんよ：盤面外への落下を検出したため終了しました。'); }catch(e){}
+      try{ this.ppFinish(); }catch(e){}
+      return false;
+    }
+    if(!pp.board || !pp.board[y]) this.ppSanitizeBoard();
+    pp.board[y][x] = c;
+    return true;
+  }
+
+
+  ppBlockedAt(x,y){
+    const pp=this._pp;
+    if(x<0 || x>=pp.w) return true;
+    if(y>=pp.h) return true;
+    if(y<0) return false;
+    return pp.board[y][x]!=null;
+  }
+
+  ppCanPlace(cur){
+    const pp=this._pp;
+    for(const p of this.ppCellsOfCur(cur)){
+      if(this.ppBlockedAt(p.x,p.y)) return false;
+    }
+    return true;
+  }
+
+  spawnPunyopunyo(){
+    const pp=this._pp;
+    const spec = pp.nextSpec || this.ppGenPieceSpec();
+    pp.nextSpec = this.ppGenPieceSpec();
+    pp.next = pp.nextSpec.previewColors;
+
+    const blocks = spec.blocks || [];
+    let minX=999, maxX=-999, minY=999, maxY=-999;
+    for(const b of blocks){
+      minX=Math.min(minX, b.dx); maxX=Math.max(maxX, b.dx);
+      minY=Math.min(minY, b.dy); maxY=Math.max(maxY, b.dy);
+    }
+    if(!isFinite(minX)){ minX=0; maxX=0; minY=0; maxY=0; }
+
+    const minSpawnX = -minX;
+    const maxSpawnX = (pp.w-1) - maxX;
+
+    let sx = Math.floor(pp.w/2);
+    sx = clamp(sx, minSpawnX, maxSpawnX);
+    sx = clamp(sx + rand(-1,1), minSpawnX, maxSpawnX);
+
+    const sy = -minY;
+
+    const cur={x:sx, y:sy, o:0, blocks: blocks};
+    if(!this.ppCanPlace(cur)){
+      pp.over=true;
+      this.ppFinish();
+      return;
+    }
+    pp.cur=cur;
+  }
+
+  openPunyopunyoPlay(){
+    const pp=this._pp;
+    if(!pp) return;
+
+    const close = ()=>{ const ol=$("#townOL"); if(ol) ol.style.display='none'; };
+    const show = ()=>{ const ol=$("#townOL"); if(ol) ol.style.display='flex'; };
+    const set = (title,sub)=>{ const t=$("#townTitle"); if(t) t.textContent=title; const s=$("#townSub")||$("#townDesc"); if(s) s.textContent=sub||''; };
+
+    const gold = num(this.p.gold,0);
+    const betRaw = num(pp.bet,0);
+    const betDisp = (betRaw===0) ? 10 : betRaw;
+
+    set("ぷんよぷんよ", `SCORE ${pp.score} / 連鎖 ${pp.chain} / 賭け金 ${betDisp}G`);
+
+    $("#townTabs").innerHTML='';
+    $("#townList").innerHTML = `
+      <div class="ppWrap">
+        <div class="ppHud" id="ppHud">
+          <div class="ppHudRow">
+            <div>Score: <b id="ppScore">${pp.score}</b></div>
+            <div>Chain: <b id="ppChain">${pp.chain}</b></div>
+          </div>
+          <div class="ppHudRow dim">
+            <div>High: <b id="ppHigh">${this.getPunyopunyoHighScore()}</b></div>
+            <div>Gold: <b id="ppGold">${gold}</b>G</div>
+          </div>
+          <div class="ppHudRow dim">
+            <div>Next: <span class="ppNextDot ppC${pp.next[0]}"></span><span class="ppNextDot ppC${pp.next[1]}"></span></div>
+            <div id="ppStatus"></div>
+          </div>
+        </div>
+        <canvas id="ppCanvas" class="ppCanvas"></canvas>
+      </div>
+    `;
+
+    // controls（iPhoneで押しやすい大きさ＆間隔にする）
+    const actions=$("#townActions");
+    if(actions) actions.innerHTML='';
+
+    const ctrl=document.createElement('div');
+    ctrl.className='ppCtrlWrap';
+    if(actions) actions.appendChild(ctrl);
+
+    // 1行目：左右＆ソフトドロップ
+    const row1=document.createElement('div'); row1.className='ppCtrlRow';
+    ctrl.appendChild(row1);
+    const mkRow=(row,label,fn,cls='')=>{
+      const b=document.createElement('div');
+      b.className=('ppBtn '+cls).trim();
+      b.textContent=label;
+      bindTap(b, ()=>fn());
+      row.appendChild(b);
+      return b;
+    };
+    mkRow(row1,'←', ()=>this.ppMove(-1),'ppWide');
+    const downBtn=document.createElement('div');
+    downBtn.className='ppBtn ppWide';
+    downBtn.textContent='↓(長押し)';
+    downBtn.addEventListener('pointerdown', (e)=>{ e.preventDefault(); this.ppSoft(true); }, {passive:false});
+    downBtn.addEventListener('pointerup',   (e)=>{ e.preventDefault(); this.ppSoft(false); }, {passive:false});
+    downBtn.addEventListener('pointercancel',(e)=>{ e.preventDefault(); this.ppSoft(false); }, {passive:false});
+    row1.appendChild(downBtn);
+    mkRow(row1,'→', ()=>this.ppMove(1),'ppWide');
+
+    // 2行目：回転＆ハードドロップ
+    const row2=document.createElement('div'); row2.className='ppCtrlRow';
+    ctrl.appendChild(row2);
+    mkRow(row2,'⟲', ()=>this.ppRotate(-1),'ppWide');
+    mkRow(row2,'DROP', ()=>this.ppHardDrop(),'ppWide');
+    mkRow(row2,'⟳', ()=>this.ppRotate(1),'ppWide');
+
+    // 3行目：終了系（誤タップ防止で幅広）
+    const row3=document.createElement('div'); row3.className='ppCtrlRow';
+    ctrl.appendChild(row3);
+    mkRow(row3,'やめる', ()=>{ this.ppFinish(true); },'ppWide');
+    mkRow(row3,'戻る', ()=>{ this.ppFinish(true); this.openTownNpcMenu(this.mons.find(m=>m.ai==='town' && m.role==='casino') || {role:'casino',name:'カジノ係'}); },'ppWide');
+
+    // resize canvas
+    this.ppResizeCanvas();
+
+    // start loop
+    pp.lastTs = 0;
+    const loop = (ts)=>{
+      if(!this._pp || this._pp!==pp) return;
+      if(pp.over) return; // stop
+      this.ppStep(ts);
+      requestAnimationFrame(loop);
+    };
+    requestAnimationFrame(loop);
+
+    show();
+    this.ppDraw();
+  }
+
+  ppResizeCanvas(){
+    const pp=this._pp; if(!pp) return;
+    const cv=$("#ppCanvas"); if(!cv) return;
+    // iPhone Safari で盤面が大きすぎると、オーバーレイがスクロールして
+    // ドラッグでズレたり誤タップが起きやすい。
+    // → 盤面サイズを「画面幅だけでなく高さ」も見て控えめに決める。
+    const pad = 24;
+    const modalMaxW = Math.min(window.innerWidth, 420);
+    const wAvail = modalMaxW - pad*2;
+    const hAvail = Math.max(220, Math.floor(window.innerHeight * 0.42));
+    const cellByW = Math.floor(wAvail / pp.w);
+    const cellByH = Math.floor(hAvail / pp.h);
+    const cell = Math.max(14, Math.min(30, Math.min(cellByW, cellByH)));
+    pp.cell = cell;
+    const cssW = cell*pp.w;
+    const cssH = cell*pp.h;
+    const dpr = window.devicePixelRatio || 1;
+    cv.style.width = cssW+'px';
+    cv.style.height = cssH+'px';
+    cv.width = Math.floor(cssW*dpr);
+    cv.height = Math.floor(cssH*dpr);
+    pp.dpr = dpr;
+  }
+
+
+  ppStep(ts){
+    const pp=this._pp; if(!pp || pp.over) return;
+
+    if(!pp.lastTs) pp.lastTs = ts;
+    const dt = ts - pp.lastTs;
+    pp.lastTs = ts;
+
+    this.ppFxStep(dt);
+
+    if(pp.anim){
+      this.ppAnimStep(dt);
+      this.ppDraw();
+      return;
+    }
+
+    if(pp.resolving) { this.ppDraw(); return; }
+
+    pp.acc += dt;
+    const fall = pp.soft ? 55 : pp.fallMs;
+    while(pp.acc >= fall){
+      pp.acc -= fall;
+      if(!this.ppMoveDown()){
+        this.ppLock();
+        return;
+      }
+    }
+    this.ppDraw();
+  }
+
+  ppFxStep(dt){
+    const pp=this._pp; if(!pp) return;
+    const fx=pp.fx || (pp.fx={particles:[], chainBanner:null, flash:0, shake:0});
+
+    if(fx.flash>0) fx.flash = Math.max(0, fx.flash - dt/260);
+    if(fx.shake>0) fx.shake = Math.max(0, fx.shake - dt/220);
+
+    if(fx.chainBanner){
+      fx.chainBanner.t += dt;
+      if(fx.chainBanner.t > fx.chainBanner.dur){
+        fx.chainBanner = null;
+      }
+    }
+
+    if(fx.particles && fx.particles.length){
+      for(const p of fx.particles){
+        p.t += dt;
+        const k = p.t / p.dur;
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+        p.vy += p.g * dt;
+        p.a = Math.max(0, 1 - k);
+      }
+      fx.particles = fx.particles.filter(p=>p.t < p.dur && p.a>0.01);
+    }
+  }
+
+  ppTriggerClearFx(cells, chain){
+    const pp=this._pp; if(!pp) return;
+    const fx=pp.fx || (pp.fx={particles:[], chainBanner:null, flash:0, shake:0});
+    const cell=pp.cell||32;
+
+    fx.flash = Math.min(1, fx.flash + 0.35 + 0.12*Math.min(6, chain));
+    fx.shake = Math.min(1, fx.shake + 0.25 + 0.10*Math.min(6, chain));
+
+    if(chain>=2){
+      fx.chainBanner = { chain, t:0, dur: 900 };
+    }
+
+    const baseN = Math.min(10, 4 + Math.floor(cells.length/3));
+    for(const c of cells){
+      const cx = (c.x + 0.5) * cell;
+      const cy = (c.y + 0.5) * cell;
+      const n = baseN + (chain>=2 ? 4 : 0);
+      for(let i=0;i<n;i++){
+        const ang = Math.random()*Math.PI*2;
+        const sp = (0.08 + Math.random()*0.22) * (1 + 0.25*Math.min(6,chain));
+        fx.particles.push({
+          x:cx, y:cy,
+          vx:Math.cos(ang)*sp,
+          vy:Math.sin(ang)*sp - 0.05,
+          g:0.00045,
+          r:2 + Math.random()*4,
+          c:c.c,
+          t:0,
+          dur: 520 + Math.random()*320,
+          a:1
+        });
+      }
+    }
+  }
+
+  ppAnimStep(dt){
+    const pp=this._pp; if(!pp || !pp.anim) return;
+    const a=pp.anim;
+    a.t += dt;
+    if(a.t >= a.dur){
+      if(a.type==='gravity'){
+        pp.board = a.boardTo;
+        this.ppSanitizeBoard();
+      }
+      pp.anim = null;
+      if(pp.animResolve){
+        const r = pp.animResolve; pp.animResolve=null;
+        try{ r(); }catch(e){}
+      }
+    }
+  }
+
+
+  ppAnimateGravity(){
+    const pp=this._pp; if(!pp) return Promise.resolve();
+    // gravity animation: avoid overlap by drawing a "base board" where moved cells are cleared
+    const from = pp.board.map(row=>row.slice());
+
+    const to = Array.from({length:pp.h}, ()=>Array(pp.w).fill(null));
+    const base = from.map(row=>row.slice());
+    let moved = [];
+
+    for(let x=0;x<pp.w;x++){
+      let write=pp.h-1;
+      for(let y=pp.h-1;y>=0;y--){
+        const v = from[y][x];
+        if(v==null) continue;
+        to[write][x] = v;
+        if(write!==y){
+          moved.push({x, y0:y, y1:write, c:v});
+          // clear original so we don't draw duplicate while animating
+          base[y][x] = null;
+        }
+        write--;
+      }
+    }
+
+    // no movement -> just apply board and continue
+    if(!moved.length){
+      pp.board = to;
+      this.ppSanitizeBoard();
+      return Promise.resolve();
+    }
+
+    // during animation, keep board as "base" (holes at origins) and draw moved pieces interpolated
+    pp.board = base;
+    this.ppSanitizeBoard();
+
+    return new Promise((resolve)=>{
+      pp.anim = {
+        type:'gravity',
+        t:0,
+        dur: Math.max(140, Math.min(420, 140 + moved.length*10)),
+        moved,
+        boardTo: to
+      };
+      pp.animResolve = resolve;
+    });
+  }
+
+
+  ppMove(dx){
+    const pp=this._pp; if(!pp || pp.over || pp.resolving) return;
+    const cur={...pp.cur, x:pp.cur.x+dx};
+    if(this.ppCanPlace(cur)){
+      pp.cur=cur;
+      this.ppDraw();
+    }
+  }
+
+  ppRotate(dir){
+    const pp=this._pp; if(!pp || pp.over || pp.resolving) return;
+    let o = pp.cur.o + (dir<0?-1:1);
+    const cand={...pp.cur, o};
+    if(this.ppCanPlace(cand)){
+      pp.cur=cand; this.ppDraw(); return;
+    }
+    // wall kick small
+    const cand2={...cand, x:cand.x+1};
+    if(this.ppCanPlace(cand2)){ pp.cur=cand2; this.ppDraw(); return; }
+    const cand3={...cand, x:cand.x-1};
+    if(this.ppCanPlace(cand3)){ pp.cur=cand3; this.ppDraw(); return; }
+  }
+
+  ppSoft(on){
+    const pp=this._pp; if(!pp || pp.over) return;
+    pp.soft = !!on;
+  }
+
+  ppHardDrop(){
+    const pp=this._pp; if(!pp || pp.over || pp.resolving) return;
+    while(this.ppMoveDown()){}
+    this.ppLock();
+  }
+
+  ppMoveDown(){
+    const pp=this._pp;
+    const cand={...pp.cur, y:pp.cur.y+1};
+    if(this.ppCanPlace(cand)){ pp.cur=cand; return true; }
+    return false;
+  }
+
+  ppLock(){
+    const pp=this._pp; if(!pp || pp.over) return;
+    const cells=this.ppCellsOfCur(pp.cur);
+    for(const p of cells){
+      if(p.y<0){ pp.over=true; this.ppFinish(); return; }
+      // 安全策：盤面外へ書き込もうとしたら落とさずに終了扱い
+      if(!this.ppWriteCell(p.x, p.y, p.c)) return;
+    }
+    this.ppSanitizeBoard();
+    pp.cur=null;
+    pp.resolving=true;
+    pp.chain=0;
+    this.ppResolveAsync();
+  }
+
+
+
+  async ppResolveAsync(){
+    const pp=this._pp; if(!pp) return;
+    const sleep = (ms)=>new Promise(r=>setTimeout(r,ms));
+    try{
+      while(true){
+        await this.ppAnimateGravity();
+
+        const cleared = this.ppClearGroups();
+        if(cleared.count<=0) break;
+
+        pp.chain += 1;
+
+        // FX：連鎖バナー（派手表示）
+        this.ppFxChain(pp.chain);
+
+        // score
+        const add = this.ppScoreAdd(cleared.count, pp.chain);
+        pp.score = num(pp.score,0) + add;
+
+        // clear cells
+        for(const c of cleared.cells){
+          if(c.y>=0 && c.y<pp.h && c.x>=0 && c.x<pp.w){
+            pp.board[c.y][c.x] = null;
+          }
+        }
+        this.ppSanitizeBoard();
+
+        // FX：消去パーティクル（派手）
+        this.ppFxBurst(cleared.cells);
+
+        // small pause
+        $("#ppScore") && ($("#ppScore").textContent = pp.score);
+        $("#ppChain") && ($("#ppChain").textContent = pp.chain);
+        $("#ppHigh") && ($("#ppHigh").textContent = this.getPunyopunyoHighScore());
+
+        this.ppDraw();
+        await sleep(90);
+      }
+    }catch(e){
+      // if resolve crashes, avoid freeze (pp.resolving stuck) and keep game recoverable
+      try{
+        const msg = (e && (e.stack||e.message)) ? (e.stack||e.message) : String(e);
+        console.error("ppResolveAsync error:", msg);
+      }catch(_){}
+    }finally{
+      pp.resolving=false;
+    }
+
+    // spawn next if still playable
+    if(pp.over) return;
+    if(!pp.cur){
+      this.spawnPunyopunyo();
+    }
+    this.ppDraw();
+  }
+
+
+  ppApplyGravity(){
+    const pp=this._pp;
+    for(let x=0;x<pp.w;x++){
+      let write=pp.h-1;
+      for(let y=pp.h-1;y>=0;y--){
+        const v=pp.board[y][x];
+        if(v!=null){
+          if(write!==y){
+            pp.board[write][x]=v;
+            pp.board[y][x]=null;
+          }
+          write--;
+        }
+      }
+    }
+  }
+
+  ppClearGroups(){
+    const pp=this._pp;
+    const vis=Array.from({length:pp.h}, ()=>Array(pp.w).fill(false));
+    const dirs=[[1,0],[-1,0],[0,1],[0,-1]];
+    let toClear=[];
+    for(let y=0;y<pp.h;y++){
+      for(let x=0;x<pp.w;x++){
+        if(vis[y][x]) continue;
+        const v=pp.board[y][x];
+        if(v==null) continue;
+        vis[y][x]=true;
+        const comp=[[x,y]];
+        const q=[[x,y]];
+        while(q.length){
+          const [cx,cy]=q.pop();
+          for(const [dx,dy] of dirs){
+            const nx=cx+dx, ny=cy+dy;
+            if(nx<0||nx>=pp.w||ny<0||ny>=pp.h) continue;
+            if(vis[ny][nx]) continue;
+            if(pp.board[ny][nx]===v){
+              vis[ny][nx]=true;
+              q.push([nx,ny]);
+              comp.push([nx,ny]);
+            }
+          }
+        }
+        if(comp.length>=4){
+          toClear = toClear.concat(comp.map(p=>({x:p[0],y:p[1]})));
+        }
+      }
+    }
+    // clear
+    for(const p of toClear){
+      pp.board[p.y][p.x]=null;
+    }
+    return {count:toClear.length, cells:toClear};
+  }
+
+  ppScoreAdd(cleared, chain){
+    const base = cleared * 10;
+    // 連鎖が強いほど伸びが良い（やりすぎない範囲で）
+    const mult = 1 + (chain-1)*0.75;
+    const add = Math.floor(base * mult * chain);
+    return Math.max(0, add);
+  }
+
+  ppFinish(forceQuit=false){
+    const pp=this._pp; if(!pp) return;
+    if(pp.paid) return;
+    // 精算：forceQuit でもスコアに応じて支払う（途中終了もOK）
+    const betRaw = num(pp.bet,0);
+    const betDisp = (betRaw===0) ? 10 : betRaw;
+
+    // ※賭け金の差し引きは startPunyopunyo() 開始時に実施済み
+const mul = this.ppCalcMultiplier(pp.score);
+    const reward = Math.floor((betDisp) * mul);
+    this.p.gold = num(this.p.gold,0) + reward;
+      this.afterGoldChange();
+
+    // high score save
+    const hs = this.getPunyopunyoHighScore();
+    if(pp.score>hs){
+      this.setPunyopunyoHighScore(pp.score);
+    }
+
+    pp.paid=true;
+    pp.over=true;
+
+    const hs2 = this.getPunyopunyoHighScore();
+    const status = $("#ppStatus");
+    if(status){
+      status.innerHTML = `<span class="dim">倍率</span> <b>${mul.toFixed(2)}</b> / <span class="dim">報酬</span> <b>${reward}</b>G`;
+    }
+    $("#ppGold") && ($("#ppGold").textContent = num(this.p.gold,0));
+
+    // show result and buttons
+    { const s=$("#townSub")||$("#townDesc"); if(s) s.textContent = `SCORE ${pp.score} / HIGH ${hs2} / 報酬 ${reward}G`; }
+
+    // replace actions with post buttons
+    $("#townActions").innerHTML='';
+    const addBtn=(label,fn)=>{
+      const b=document.createElement('button');
+      b.className='btn';
+      b.textContent=label;
+      b.onclick=()=>fn();
+      $("#townActions").appendChild(b);
+      return b;
+    };
+
+    addBtn('もう一回（同額）', ()=>{
+      const goldNow = num(this.p.gold,0);
+      let nextBet = betRaw;
+      if(goldNow<=0) nextBet = 0;
+      if(nextBet===-1) nextBet = goldNow;
+      if(nextBet>goldNow && goldNow>0) nextBet = goldNow;
+      this.startPunyopunyo({bet: nextBet});
+    });
+    addBtn('続ける（全額）', ()=>{
+      const goldNow = num(this.p.gold,0);
+      if(goldNow<=0){
+        this.startPunyopunyo({bet:0});
+      }else{
+        this.startPunyopunyo({bet: goldNow});
+      }
+    });
+    addBtn('賭け金変更', ()=>{ this._pp=null; this.openPunyopunyoSetup(); });
+    addBtn('戻る', ()=>{ this._pp=null; this.openTownNpcMenu(this.mons.find(m=>m.ai==='town' && m.role==='casino') || {role:'casino',name:'カジノ係'}); });
+  }
+
+  ppDraw(){
+    const pp=this._pp; if(!pp) return;
+    const cv=$("#ppCanvas"); if(!cv) return;
+    const ctx=cv.getContext('2d');
+    const dpr=pp.dpr||1;
+    const cell=pp.cell||32;
+    ctx.save();
+    ctx.scale(dpr,dpr);
+
+    const W=cell*pp.w, H=cell*pp.h;
+
+    // screen shake
+    const fx=pp.fx||{};
+    if(fx.shake>0){
+      const mag = (cell*0.10) * fx.shake;
+      const sx = (Math.random()*2-1)*mag;
+      const sy = (Math.random()*2-1)*mag;
+      ctx.translate(sx,sy);
+    }
+
+    // background
+    ctx.clearRect(0,0,W,H);
+    const bg=ctx.createLinearGradient(0,0,0,H);
+    bg.addColorStop(0,'rgba(20,24,32,0.72)');
+    bg.addColorStop(1,'rgba(8,10,14,0.86)');
+    ctx.fillStyle=bg;
+    ctx.fillRect(0,0,W,H);
+
+    // grid subtle
+    ctx.strokeStyle='rgba(120,227,255,0.06)';
+    ctx.lineWidth=1;
+    for(let x=0;x<=pp.w;x++){
+      ctx.beginPath(); ctx.moveTo(x*cell+0.5,0); ctx.lineTo(x*cell+0.5,H); ctx.stroke();
+    }
+    for(let y=0;y<=pp.h;y++){
+      ctx.beginPath(); ctx.moveTo(0,y*cell+0.5); ctx.lineTo(W,y*cell+0.5); ctx.stroke();
+    }
+
+    const palette=[
+      ['rgba(255,90,120,1)','rgba(255,190,205,0.9)'],  // red/pink
+      ['rgba(90,210,255,1)','rgba(190,245,255,0.9)'],  // cyan
+      ['rgba(120,255,170,1)','rgba(210,255,235,0.9)'], // green
+      ['rgba(255,220,110,1)','rgba(255,245,205,0.92)'],// yellow
+      ['rgba(175,120,255,1)','rgba(230,210,255,0.92)'],// purple
+    ];
+
+    const drawP=(x,y,c,ghost=false)=>{
+      const px=x*cell, py=y*cell;
+      const r=cell*0.42;
+      const cx=px+cell/2, cy=py+cell/2;
+      const [base,hi]=palette[c%palette.length];
+      const grad=ctx.createRadialGradient(cx-r*0.35, cy-r*0.35, r*0.15, cx, cy, r*1.15);
+      grad.addColorStop(0, hi);
+      grad.addColorStop(0.35, base);
+      grad.addColorStop(1, 'rgba(0,0,0,0.25)');
+      ctx.fillStyle=grad;
+      ctx.globalAlpha = ghost?0.85:1.0;
+      ctx.beginPath();
+      ctx.arc(cx,cy,r,0,Math.PI*2);
+      ctx.fill();
+      // glossy highlight
+      const g2=ctx.createRadialGradient(cx-r*0.35, cy-r*0.45, 0, cx-r*0.35, cy-r*0.45, r*0.95);
+      g2.addColorStop(0,'rgba(255,255,255,0.65)');
+      g2.addColorStop(0.35,'rgba(255,255,255,0.16)');
+      g2.addColorStop(1,'rgba(255,255,255,0)');
+      ctx.fillStyle=g2;
+      ctx.beginPath();
+      ctx.arc(cx-r*0.15, cy-r*0.25, r*0.9, 0, Math.PI*2);
+      ctx.fill();
+      ctx.globalAlpha=1;
+      // outline
+      ctx.strokeStyle='rgba(0,0,0,0.35)';
+      ctx.lineWidth=1.5;
+      ctx.beginPath();
+      ctx.arc(cx,cy,r,0,Math.PI*2);
+      ctx.stroke();
+    };
+
+    // draw settled
+    if(pp.anim && pp.anim.type==='gravity'){
+      const a=pp.anim;
+      const t = clamp(a.t / a.dur, 0, 1);
+      const boardStatic = (a.boardStatic && Array.isArray(a.boardStatic) && a.boardStatic.length===pp.h) ? a.boardStatic : pp.board;
+      for(let y=0;y<pp.h;y++){
+        const row = boardStatic[y];
+        if(!row) continue;
+        for(let x=0;x<pp.w;x++){
+          const v=row[x];
+          if(v!=null) drawP(x,y,v);
+        }
+      }
+      const movers = a.moved || a.items || [];
+      for(const it of movers){
+        if(!it) continue;
+        const yy = it.y0 + (it.y1 - it.y0) * t;
+        drawP(it.x, yy, it.c, true);
+      }
+    }else{
+      for(let y=0;y<pp.h;y++){
+        for(let x=0;x<pp.w;x++){
+          const v=pp.board[y][x];
+          if(v!=null) drawP(x,y,v);
+        }
+      }
+    }
+    // draw current (smooth falling)
+    if(pp.cur){
+      const fall = pp.soft ? 55 : pp.fallMs;
+      const frac = fall>0 ? clamp(pp.acc / fall, 0, 0.95) : 0;
+      for(const p of this.ppCellsOfCur(pp.cur)){
+        const yy = p.y + frac;
+        if(yy>=0) drawP(p.x, yy, p.c, true, true);
+      }
+    }
+
+    
+    // particles & chain banner & flash overlay
+    if(fx && fx.particles && fx.particles.length){
+      for(const p of fx.particles){
+        const col = colors[p.c] || 'rgba(255,255,255,0.9)';
+        ctx.globalAlpha = 0.85 * (p.a ?? 1);
+        ctx.fillStyle = col;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.r, 0, Math.PI*2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    if(fx && fx.chainBanner){
+      const t = fx.chainBanner.t / fx.chainBanner.dur;
+      const a = Math.max(0, 1 - t);
+      const scale = 1.15 + 0.35*Math.sin(Math.min(1,t)*Math.PI);
+      ctx.save();
+      ctx.globalAlpha = a;
+      ctx.translate(W/2, H*0.35);
+      ctx.scale(scale, scale);
+      ctx.textAlign='center';
+      ctx.textBaseline='middle';
+      ctx.font = 'bold ' + Math.floor(cell*1.05) + 'px system-ui, -apple-system, sans-serif';
+      ctx.shadowColor='rgba(0,0,0,0.55)';
+      ctx.shadowBlur=18;
+      ctx.fillStyle='rgba(255,255,255,0.95)';
+      ctx.fillText(fx.chainBanner.chain + ' 連鎖!!', 0, 0);
+      ctx.shadowBlur=0;
+      ctx.strokeStyle='rgba(64,200,255,0.75)';
+      ctx.lineWidth=4;
+      ctx.strokeText(fx.chainBanner.chain + ' 連鎖!!', 0, 0);
+      ctx.restore();
+    }
+
+    if(fx && fx.flash>0){
+      ctx.save();
+      ctx.globalAlpha = 0.22 * fx.flash;
+      const g=ctx.createRadialGradient(W/2,H/2,0,W/2,H/2,Math.max(W,H)*0.65);
+      g.addColorStop(0,'rgba(255,255,255,0.75)');
+      g.addColorStop(0.45,'rgba(255,255,255,0.22)');
+      g.addColorStop(1,'rgba(255,255,255,0)');
+      ctx.fillStyle=g;
+      ctx.fillRect(0,0,W,H);
+      ctx.restore();
+    }
+
+    ctx.restore();
+
+    // hud update
+    const s=$("#ppScore"); if(s) s.textContent = pp.score;
+    const c=$("#ppChain"); if(c) c.textContent = pp.chain;
+    const sub = $("#townSub")||$("#townDesc");
+    if(sub){
+      const gold2=num(this.p.gold,0);
+      const betRaw=num(pp.bet,0);
+      const betDisp=(gold2<=0 && betRaw===0)?10:betRaw;
+      sub.textContent = `SCORE ${pp.score} / 連鎖 ${pp.chain} / 賭け金 ${betDisp}G`;
+    }
   }
 
 
@@ -1620,6 +2778,7 @@ openHighLow(){
       }
       // 賭け金を先に支払う
       this.p.gold = gold - bet;
+    this.afterGoldChange();
     }
 
     // 前回賭け金として保持（次回のデフォルトに使う）
@@ -1742,6 +2901,7 @@ addBtn('やめる', false, ()=>{ this._ms=null; this.openTownNpcMenu(this.mons.f
     if(ms.first && val===-1){
       // 返金して仕切り直し（同条件で盤面だけ作り直す）
       this.p.gold = num(this.p.gold,0) + ms.bet;
+      this.afterGoldChange();
       this.msg('初手が爆弾だったので返金して仕切り直し');
       const cfg={w:ms.w,h:ms.h,bombs:ms.bombs,bet:ms.bet};
       this._ms=null;
@@ -1781,6 +2941,7 @@ addBtn('やめる', false, ()=>{ this._ms=null; this.openTownNpcMenu(this.mons.f
       const mult=this.msCalcMultiplier(ms.w,ms.h,ms.bombs);
       const reward=Math.max(0, Math.floor(ms.bet*mult));
       this.p.gold = num(this.p.gold,0) + reward;
+      this.afterGoldChange();
       // 全表示（爽快）
       for(let yy=0;yy<ms.h;yy++) for(let xx=0;xx<ms.w;xx++) ms.revealed[yy][xx]=true;
       this.msg(`クリア！ +${reward}G（倍率${mult.toFixed(2)}）`);
@@ -1982,6 +3143,7 @@ addBtn('やめる', false, ()=>{ this._ms=null; this.openTownNpcMenu(this.mons.f
         return;
       }
       this.p.gold = num(this.p.gold,0) - num(st.total,0);
+      this.afterGoldChange();
       for(const it of st.items){
         delete it.unpaid; delete it.shopRid; delete it.price;
       }
@@ -2361,7 +3523,8 @@ hit(att,def,base){
     const it=this.itemAt(this.p.x,this.p.y);
     if(!it) return;
     if(this.shopCells.has(`${it.x},${it.y}`) && it.price!=null){
-      if(num(this.p.gold,0)>=num(it.price,0)){ this.p.gold=num(this.p.gold,0)-num(it.price,0); this.msg(`購入: ${it.name}`); fxSpark(); }
+      if(num(this.p.gold,0)>=num(it.price,0)){ this.p.gold=num(this.p.gold,0)-num(it.price,0);
+      this.afterGoldChange(); this.msg(`購入: ${it.name}`); fxSpark(); }
       else return;
     }
 
@@ -2374,6 +3537,7 @@ hit(att,def,base){
     // 金
     if(it.type==='gold'){
       this.p.gold = num(this.p.gold,0) + num(it.amount,0);
+      this.afterGoldChange();
       this.msg(`${num(it.amount,0)}Gを拾った`);
       fxSpark();
       this.items=this.items.filter(x=>x!==it);
@@ -3138,7 +4302,7 @@ window.addEventListener('DOMContentLoaded', ()=>{
   setInterval(()=>{ if(g){ g.render(); }}, 1000); // 重なり点滅
 
   const updateTitle=()=>{ const bestF=localStorage.getItem('bestF')||0; const bestS=localStorage.getItem('bestScore')||0; $("#bestInfo").textContent=`過去の最高到達: ${bestF}階 / スコア: ${bestS}`; };
-  const showTitle=()=>{ $("#game").style.display='none'; $("#title").style.display='flex'; updateTitle(); };
+  const showTitle=()=>{ try{ if(g && g.saveGlobalGold) g.saveGlobalGold(); }catch(e){} $("#game").style.display='none'; $("#title").style.display='flex'; updateTitle(); };
   window.showTitle=showTitle;
 
   function syncPickupBtn(){ $('#btnPickupMode').textContent = `自動拾い：${g && g.autoPickup ? 'ON' : 'OFF'}`; }
@@ -3157,6 +4321,7 @@ window.addEventListener('DOMContentLoaded', ()=>{
     $("#game").style.display='block';
     g=new Game();
     syncPickupBtn();
+    try{ if(g.loadGlobalGold) g.loadGlobalGold(); }catch(e){}
     g.gen(1);
   }
   function startLocal(){
@@ -3176,6 +4341,7 @@ window.addEventListener('DOMContentLoaded', ()=>{
     syncPickupBtn();
     // 脱出で持ち帰った状態があれば読み込み
     g.loadHoldFromTitle();
+    try{ if(g.loadGlobalGold) g.loadGlobalGold(); }catch(e){}
     g.genTown();
   }
 
@@ -3187,6 +4353,8 @@ window.addEventListener('DOMContentLoaded', ()=>{
     }
     // 脱出→タイトル保持があれば反映（所持金など）
     try{ if(g.loadHoldFromTitle) g.loadHoldFromTitle(); }catch(e){}
+    // タイトル財布（ミニゲームで増えた所持金）も反映
+    try{ if(g.loadGlobalGold) g.loadGlobalGold(); }catch(e){}
     // ミニゲーム一覧を表示（町のカジノと同じ）
     try{
       if(g.openMiniGameHub) g.openMiniGameHub({fromTitle:true});
@@ -3359,4 +4527,3 @@ Game.prototype.tileSpan = function(x,y){
   if(stair) return `<span class="cell stair" ${data}>></span>`;
   return `<span class="cell" ${data}>${this.nearStairs.has(key)?'·':'.'}</span>`;
 };
-
