@@ -7,24 +7,65 @@
 <title>ASCII Roguelike 999F — 整頓保持＆デコイ＆FX</title>
 <style>
 :root{
-  --bg:#0b0d10; --panel:#10141a; --panel2:#121821; --fg:#e9eef3; --dim:#a7b4be; --line:#1d2530;
-  --accent:#0f2a23; --accent2:#134a3a; --good:#c8ffee; --warn:#ffdb9d; --hl:#78e3ff;
+  --bg:#05060a;
+  --panel:#0e1020;
+  --panel2:#0b0d1a;
+  --fg:#f3f4ff;
+  --dim:#b8b9d6;
+  --line:#2a2b4a;
+  --accent:#202b60;
+  --accent2:#3a52b3;
+  --good:#b9ffea;
+  --warn:#ffe6a8;
+  --hl:#7cf1ff;
   --green:#8bffc9;
 }
 *{box-sizing:border-box; -webkit-tap-highlight-color:rgba(0,0,0,0)!important;}
 html,body{height:100%}
-html, body { margin:0; background:#0b0d10; color:var(--fg);
+html, body { margin:0; background:var(--bg); color:var(--fg);
   font-family:ui-monospace,Menlo,Consolas,monospace;
   overflow:hidden; height:100svh;
   touch-action: manipulation;
   -webkit-text-size-adjust:100%;
   overscroll-behavior:none;
 }
-.btn{padding:8px 10px;border-radius:10px;border:1px solid var(--line);background:#141b23;color:#e9f3ff;user-select:none;cursor:pointer;font-size:13px;line-height:1}
+
+body::before{
+  content:"";
+  position:fixed; inset:0;
+  pointer-events:none;
+  background:
+    repeating-linear-gradient(
+      to bottom,
+      rgba(255,255,255,.04) 0px,
+      rgba(255,255,255,.04) 1px,
+      rgba(0,0,0,0) 3px,
+      rgba(0,0,0,0) 6px
+    );
+  mix-blend-mode:overlay;
+  opacity:.35;
+  z-index:1;
+}
+#title, #game, #toast, #fx, .overlay{position:relative; z-index:2;}
+.btn{
+  padding:10px 12px;
+  border-radius:10px;
+  border:2px solid var(--line);
+  background:linear-gradient(180deg, rgba(40,44,80,.95), rgba(12,14,30,.95));
+  color:var(--fg);
+  user-select:none;
+  cursor:pointer;
+  font-size:14px;
+  line-height:1;
+  box-shadow:0 6px 0 rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.06) inset;
+  text-shadow:0 1px 0 rgba(0,0,0,.65);
+}
 .btn:active{filter:brightness(1.1)}
 #title{display:flex;align-items:center;justify-content:center;height:100svh;padding:10px}
-.titleCard{width:min(720px,92vw);background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:12px}
+.titleCard{width:min(720px,92vw);background:linear-gradient(180deg, rgba(24,26,52,.92), rgba(10,12,24,.92));border:2px solid var(--line);border-radius:16px;padding:14px;box-shadow:0 14px 44px rgba(0,0,0,.55)}
 .row{display:flex;gap:6px;flex-wrap:wrap;justify-content:center}
+.titleMenu{display:flex;flex-direction:column;align-items:center;gap:10px;margin-top:8px}
+.titleMenu .btn{width:min(420px,86vw);text-align:center;font-size:15px;padding:12px 14px}
 .dim{color:var(--dim)}
 #game{display:none;padding:calc(6px + env(safe-area-inset-top,0px)) calc(6px + env(safe-area-inset-right,0px)) calc(6px + env(safe-area-inset-bottom,0px)) calc(6px + env(safe-area-inset-left,0px));height:100svh;max-width:980px;margin:0 auto;gap:6px}
 .top{display:flex;align-items:center;justify-content:space-between;gap:6px}
@@ -390,6 +431,7 @@ button, .pad, .act, .btn { touch-action: manipulation; }
 .ppSetup{width:100%; max-width:520px;}
 .ppRow{display:flex; justify-content:space-between; align-items:center; gap:10px; padding:6px 0;}
 #ppBetLine .btn{margin-right:8px;}
+.ppSelect{width:100%; max-width:260px; padding:10px 12px; font-size:16px; border-radius:12px; border:2px solid rgba(120,227,255,.20); background:linear-gradient(180deg, rgba(16,18,34,.96), rgba(10,10,18,.96)); color:var(--fg); box-shadow:0 4px 0 rgba(0,0,0,.45), 0 0 0 1px rgba(255,255,255,.05) inset;}
 .ppC0{background:radial-gradient(circle at 30% 25%, rgba(255,190,205,.95), rgba(255,90,120,1) 55%, rgba(0,0,0,.2));}
 .ppC1{background:radial-gradient(circle at 30% 25%, rgba(190,245,255,.95), rgba(90,210,255,1) 55%, rgba(0,0,0,.2));}
 .ppC2{background:radial-gradient(circle at 30% 25%, rgba(210,255,235,.95), rgba(120,255,170,1) 55%, rgba(0,0,0,.2));}
@@ -403,7 +445,7 @@ button, .pad, .act, .btn { touch-action: manipulation; }
   flex:1;
   min-width:92px;
   padding:14px 16px;
-  font-size:17px;
+  font-size:19px;
   border-radius:16px;
   text-align:center;
   border:1px solid rgba(120,227,255,.16);
@@ -417,6 +459,64 @@ button, .pad, .act, .btn { touch-action: manipulation; }
 }
 .ppBtn:active{transform:translateY(1px); filter:brightness(1.08);}
 .ppBtn.ppWide{min-width:92px;}
+.ppBtn.ppEmph{font-size:24px; font-weight:900; border-color:rgba(255,230,140,.30); background:radial-gradient(120% 120% at 20% 15%, rgba(255,255,255,.18), rgba(255,255,255,0) 55%), linear-gradient(180deg, rgba(70,88,210,.82), rgba(14,16,30,.92)); box-shadow:0 10px 26px rgba(0,0,0,.45), 0 0 0 1px rgba(255,255,255,.06) inset, 0 0 18px rgba(255,226,130,.10);}
+.ppBtn.ppDrop{
+  border-color:rgba(140,255,210,.28);
+  background:
+    radial-gradient(120% 120% at 20% 15%, rgba(255,255,255,.18), rgba(255,255,255,0) 55%),
+    linear-gradient(180deg, rgba(28,150,110,.82), rgba(10,16,18,.92));
+  box-shadow:0 10px 26px rgba(0,0,0,.45), 0 0 0 1px rgba(255,255,255,.06) inset, 0 0 18px rgba(140,255,210,.10);
+}
+
+.ppMiniBtn{
+  padding:7px 10px;
+  border-radius:999px;
+  font-size:12px;
+  border:1px solid rgba(120,227,255,.18);
+  color:var(--fg);
+  background:linear-gradient(180deg, rgba(18,22,30,.55), rgba(10,10,12,.72));
+  box-shadow:0 8px 18px rgba(0,0,0,.35), 0 0 0 1px rgba(255,255,255,.04) inset;
+  touch-action:manipulation;
+}
+.ppMiniBtn:active{transform:translateY(1px); filter:brightness(1.08);}
+
+/* スコア一覧ウインドウ */
+.ppScoreOL{
+  position:fixed; inset:0;
+  display:none;
+  align-items:center; justify-content:center;
+  background:rgba(0,0,0,.55);
+  z-index:9999;
+}
+.ppScoreModal{
+  width:min(560px, 92vw);
+  max-height:82vh;
+  overflow:auto;
+  border-radius:16px;
+  padding:12px 12px 14px;
+  background:linear-gradient(180deg, rgba(22,26,34,.94), rgba(10,12,16,.94));
+  border:1px solid rgba(120,227,255,.18);
+  box-shadow:0 20px 60px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.05) inset;
+}
+.ppScoreHead{display:flex; align-items:center; justify-content:space-between; gap:10px;}
+.ppScoreTitle{font-weight:900; font-size:18px;}
+.ppScoreHeadBtns{display:flex; gap:8px; align-items:center;}
+.ppMiniAction{padding:8px 10px; font-size:13px;}
+.ppScoreNote{margin:6px 0 10px; font-size:12px;}
+.ppScoreRow{padding:9px 10px; border-radius:12px; border:1px solid rgba(255,255,255,.06); background:rgba(255,255,255,.03); margin:8px 0;}
+.ppScoreCfg{font-size:12px; font-weight:700; opacity:.95;}
+.ppScoreNums{margin-top:4px; font-size:14px;}
+.ppScoreMeta{margin-top:4px; font-size:11px;}
+.ppScoreTA{
+  width:100%;
+  border-radius:12px;
+  padding:10px 10px;
+  border:1px solid rgba(120,227,255,.18);
+  background:rgba(0,0,0,.35);
+  color:var(--fg);
+  font-size:12px;
+  resize:vertical;
+}
 
 @media (max-width:420px){
   .ppBtn{min-width:86px; font-size:16px; padding:16px 10px;}
@@ -435,8 +535,9 @@ button, .pad, .act, .btn { touch-action: manipulation; }
 <div class="titleCard">
 <div style="font-weight:800;font-size:20px">ASCII ローグライク 999F — 整頓保持＆デコイ＆FX</div>
 <div class="dim" id="bestInfo" style="margin:6px 0 10px">過去の最高到達: - / スコア: -</div>
-<div class="row">
+<div class="titleMenu">
 <div class="btn" id="btnNew">新しく始める</div>
+  <div class="btn" id="btnTownCarry">アイテム等を持ち込んではじめる</div>
 <div class="btn" id="btnTown">町に行く</div>
 <div class="btn" id="btnMiniGames">ミニゲーム</div>
 <div class="btn" id="btnLocal">ローカルセーブから続き</div>

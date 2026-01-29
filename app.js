@@ -142,7 +142,12 @@ const LS_TOWN_HOLD = 'townHold_v1';
 const LS_TOWN_STORAGE = 'townStorage_v1';
 const LS_TOWN_LOSTFOUND = 'townLostFound_v1';
 const LS_PUNYO_HS = 'punyopunyoHigh_v1';
+const LS_PUNYO_SCORES = 'punyopunyoScores_v1';
 const LS_GLOBAL_GOLD = 'townGlobalGold_v1';
+const LS_TOWN_STORAGE_BAK = 'townStorage_bak_v1';
+const LS_TOWN_LOSTFOUND_BAK = 'townLostFound_bak_v1';
+// 「脱出後はローカルセーブ再開を隠す」ためのフラグ
+const LS_ESCAPED_FLAG = 'escapedAfterExit_v1';
 const VIEW_W=23, VIEW_H=11; 
 const MAX_FLOOR=999; 
 const INV_BASE_MAX=30;           // 所持上限30
@@ -392,19 +397,65 @@ class Game{
 
   // ===== Town persistent / hold (localStorage) =====
   loadTownPersistent(){
-    // townStorage / townLostFound は「シリアライズ済みアイテム配列」を保持する
-    try{
-      const a = JSON.parse(localStorage.getItem(LS_TOWN_STORAGE) || '[]');
-      this.townStorage = Array.isArray(a) ? a : [];
-    }catch(e){ this.townStorage=[]; }
-    try{
-      const a = JSON.parse(localStorage.getItem(LS_TOWN_LOSTFOUND) || '[]');
-      this.townLostFound = Array.isArray(a) ? a : [];
-    }catch(e){ this.townLostFound=[]; }
+    // 町保管は「消えない」方針：本体 + バックアップ（縮まない）を併用して保護する
+    const safeParseArr = (key)=>{
+      try{
+        const a = JSON.parse(localStorage.getItem(key) || '[]');
+        return Array.isArray(a) ? a : [];
+      }catch(e){ return []; }
+    };
+    const mainStorage = safeParseArr(LS_TOWN_STORAGE);
+    const mainLost    = safeParseArr(LS_TOWN_LOSTFOUND);
+    const bakStorage  = safeParseArr(LS_TOWN_STORAGE_BAK);
+    const bakLost     = safeParseArr(LS_TOWN_LOSTFOUND_BAK);
+
+    // 本体が空/破損でもバックアップがあれば復元
+    this.townStorage  = (mainStorage && mainStorage.length) ? mainStorage : bakStorage;
+    this.townLostFound= (mainLost && mainLost.length) ? mainLost : bakLost;
+
+    // バックアップも同期（読み込み時点で整合）
+    try{ localStorage.setItem(LS_TOWN_STORAGE_BAK, JSON.stringify(this.townStorage||[])); }catch(e){}
+    try{ localStorage.setItem(LS_TOWN_LOSTFOUND_BAK, JSON.stringify(this.townLostFound||[])); }catch(e){}
   }
   saveTownPersistent(){
-    try{ localStorage.setItem(LS_TOWN_STORAGE, JSON.stringify(this.townStorage||[])); }catch(e){}
-    try{ localStorage.setItem(LS_TOWN_LOSTFOUND, JSON.stringify(this.townLostFound||[])); }catch(e){}
+    // 「何をしても消えない」：バックアップは縮まない（本体が空でも過去分は保持）
+    const safeParseArr = (key)=>{
+      try{
+        const a = JSON.parse(localStorage.getItem(key) || '[]');
+        return Array.isArray(a) ? a : [];
+      }catch(e){ return []; }
+    };
+    const dedupe = (arr)=>{
+      const seen=new Set();
+      const out=[];
+      for(const it of (arr||[])){
+        if(!it) continue;
+        const k = (it._uid!=null) ? String(it._uid) : JSON.stringify(it);
+        if(seen.has(k)) continue;
+        seen.add(k);
+        out.push(it);
+      }
+      return out;
+    };
+    const ensureUid = (it)=>{
+      if(!it || it._uid!=null) return;
+      it._uid = `${Date.now()}_${Math.floor(Math.random()*1e9)}`;
+    };
+
+    const curS = (this.townStorage||[]); curS.forEach(ensureUid);
+    const curL = (this.townLostFound||[]); curL.forEach(ensureUid);
+
+    // 本体保存（現状の見た目に合わせる）
+    try{ localStorage.setItem(LS_TOWN_STORAGE, JSON.stringify(curS)); }catch(e){}
+    try{ localStorage.setItem(LS_TOWN_LOSTFOUND, JSON.stringify(curL)); }catch(e){}
+
+    // バックアップは「過去分 + 現在分」の和集合で保持
+    const bakS = safeParseArr(LS_TOWN_STORAGE_BAK);
+    const bakL = safeParseArr(LS_TOWN_LOSTFOUND_BAK);
+    const mergedS = dedupe([].concat(bakS, curS));
+    const mergedL = dedupe([].concat(bakL, curL));
+    try{ localStorage.setItem(LS_TOWN_STORAGE_BAK, JSON.stringify(mergedS)); }catch(e){}
+    try{ localStorage.setItem(LS_TOWN_LOSTFOUND_BAK, JSON.stringify(mergedL)); }catch(e){}
   }
 
   // ===== Global gold wallet (for title minigames etc.) =====
@@ -480,6 +531,46 @@ class Game{
 
     // inventory
     this.inv = Array.isArray(hold.inv) ? hold.inv.map(o=>Game._deserializeItem(o)).filter(Boolean) : [];
+  }
+
+  // ===== carry-start helpers =====
+  resetPlayerForFreshRun(){
+    // 「新しく始める」と同等にステ/レベルを初期化（所持金・インベントリは呼び出し側で管理）
+    this.p.hp = num(36);
+    this.p.maxHp = num(36);
+    this.p.str = num(10);
+    this.p.baseAtk = num(5);
+    this.p.baseDef = num(1);
+    this.p.lv = num(1);
+    this.p.xp = num(0);
+    this.p.invincible = num(0);
+    this.p.wep = null;
+    this.p.arm = null;
+    this.p.arrow = null;
+    this.p.ar = num(0);
+  }
+
+  // hold側（装備/装填矢）も含めて「持ち込み対象のアイテム配列」を作る
+  extractAllHoldItems(){
+    const out = [];
+    try{
+      // 既に inv に入っている分
+      if(Array.isArray(this.inv)) out.push(...this.inv);
+      // 装備をアイテムとして持ち込み（装備状態は解除）
+      if(this.p.wep) out.push(this.p.wep);
+      if(this.p.arm) out.push(this.p.arm);
+      // 装填中の矢は「矢アイテム」として持ち込み
+      if(this.p.arrow && num(this.p.ar,0)>0){
+        const ak = this.p.arrow.kind || 'normal';
+        const a = clone(arrowDef(ak));
+        a.type = 'arrow';
+        a.kind = ak;
+        a.count = num(this.p.ar,0);
+        a.ided = true;
+        out.push(a);
+      }
+    }catch(e){ console.error(e); }
+    return out.filter(Boolean);
   }
 
   // ---- item serialization helpers (functions cannot be JSON'd) ----
@@ -1072,7 +1163,7 @@ this.render();
     }
 
     if(npc.role==='tagger'){
-      set("タグ職人","装備に『返還タグ』を付けられます（死亡時に町へ戻り、タグは消えます）");
+      set("タグ職人","装備に『返還タグ』を付けられます（死亡時に町へ返還され、タグも残ります）");
       const FEE=200;
       $("#townTabs").innerHTML='';
       $("#townList").innerHTML='';
@@ -1503,6 +1594,201 @@ openHighLow(){
     try{ localStorage.setItem(LS_PUNYO_HS, JSON.stringify(num(v,0))); }catch(e){}
   }
 
+getPunyopunyoScoreBook(){
+  try{
+    const raw = localStorage.getItem(LS_PUNYO_SCORES);
+    if(!raw) return {v:1, combos:{}, history:[]};
+    const b = JSON.parse(raw);
+    if(!b || typeof b!=='object') return {v:1, combos:{}, history:[]};
+    if(!b.combos || typeof b.combos!=='object') b.combos = {};
+    if(!Array.isArray(b.history)) b.history = [];
+    b.v = num(b.v,1) || 1;
+    if(b.history.length>200) b.history = b.history.slice(-200);
+    return b;
+  }catch(e){
+    return {v:1, combos:{}, history:[]};
+  }
+}
+setPunyopunyoScoreBook(book){
+  try{
+    if(!book || typeof book!=='object') book = {v:1, combos:{}, history:[]};
+    if(!book.combos || typeof book.combos!=='object') book.combos = {};
+    if(!Array.isArray(book.history)) book.history = [];
+    if(book.history.length>200) book.history = book.history.slice(-200);
+    localStorage.setItem(LS_PUNYO_SCORES, JSON.stringify(book));
+  }catch(e){}
+}
+ppMakeScoreComboKey(pp, bet){
+  const sizeKey = String(pp?.sizeKey || 'N');
+  const distKey = String(pp?.distKey || 'STD');
+  const maxN = Math.max(2, Math.min(20, num(pp?.maxN,4)));
+  const assist = pp?.assist ? 1 : 0;
+  const b = Math.max(0, num(bet,0));
+  return `${sizeKey}|${distKey}|${maxN}|${assist}|${b}`;
+}
+ppRecordPunyopunyoScore(pp, mul, reward, forceQuit=false){
+  try{
+    if(!pp) return;
+    const betRaw = num(pp.bet,0);
+    const loanBet = num(pp.loanBet,0);
+    const virtBet = (loanBet>0) ? loanBet : betRaw;
+
+    const key = this.ppMakeScoreComboKey(pp, virtBet);
+    const book = this.getPunyopunyoScoreBook();
+    const now = Date.now();
+    const score = num(pp.score,0);
+
+    const rec = book.combos[key] || {best:0, plays:0, last:0, lastScore:0, lastReward:0, lastMul:0};
+    rec.plays = num(rec.plays,0) + 1;
+    rec.last = now;
+    rec.lastScore = score;
+    rec.lastReward = Math.max(0, num(reward,0));
+    rec.lastMul = num(mul,0);
+    if(score > num(rec.best,0)) rec.best = score;
+    book.combos[key] = rec;
+
+    book.history.push({
+      t: now,
+      key,
+      sizeKey: String(pp.sizeKey||'N'),
+      distKey: String(pp.distKey||'STD'),
+      maxN: Math.max(2, Math.min(20, num(pp.maxN,4))),
+      assist: !!pp.assist,
+      bet: virtBet,
+      score,
+      mul: num(mul,0),
+      reward: Math.max(0, num(reward,0)),
+      quit: !!forceQuit
+    });
+    if(book.history.length>200) book.history = book.history.slice(-200);
+
+    this.setPunyopunyoScoreBook(book);
+  }catch(e){}
+}
+ppScoreBookToText(book){
+  book = book || this.getPunyopunyoScoreBook();
+  const lines=[];
+  lines.push("Punyopunyo Score Book v1");
+  const combos = book.combos || {};
+  const items = Object.keys(combos).map(k=>({k, ...combos[k]}));
+  items.sort((a,b)=> num(b.best,0)-num(a.best,0));
+  for(const it of items){
+    const lastStr = it.last ? (new Date(it.last)).toLocaleString() : '';
+    lines.push(`${it.k}\tbest=${num(it.best,0)}\tplays=${num(it.plays,0)}\tlastScore=${num(it.lastScore,0)}\tlastReward=${num(it.lastReward,0)}\tlastMul=${num(it.lastMul,0).toFixed(2)}\tlast=${lastStr}`);
+  }
+  return lines.join("\n");
+}
+ppOpenScoreBookWindow(){
+  const idOL='ppScoreOL';
+  let ol=document.getElementById(idOL);
+  if(!ol){
+    ol=document.createElement('div');
+    ol.id=idOL;
+    ol.className='ppScoreOL';
+    ol.innerHTML = `
+      <div class="ppScoreModal">
+        <div class="ppScoreHead">
+          <div class="ppScoreTitle">スコア一覧</div>
+          <div class="ppScoreHeadBtns">
+            <button class="btn ppMiniAction" id="ppScoreTextBtn">テキスト</button>
+            <button class="btn ppMiniAction" id="ppScoreCloseBtn">閉じる</button>
+          </div>
+        </div>
+        <div class="dim ppScoreNote">組み合わせ別に「最高」と「直近」を保存します（ローカル＋セーブコードにも含まれます）。</div>
+        <div id="ppScoreList"></div>
+        <div id="ppScoreTextBox" style="display:none; margin-top:10px;">
+          <div class="dim" style="margin-bottom:6px;">コピーして保存できます</div>
+          <textarea id="ppScoreTextArea" class="ppScoreTA" rows="10"></textarea>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(ol);
+
+    const close=()=>{ ol.style.display='none'; };
+    ol.addEventListener('click',(e)=>{ if(e.target===ol) close(); });
+
+    const closeBtn = document.getElementById('ppScoreCloseBtn');
+    if(closeBtn) closeBtn.onclick = close;
+
+    const textBtn = document.getElementById('ppScoreTextBtn');
+    if(textBtn){
+      textBtn.onclick = ()=>{
+        const book = this.getPunyopunyoScoreBook();
+        const box = document.getElementById('ppScoreTextBox');
+        const ta  = document.getElementById('ppScoreTextArea');
+        if(ta) ta.value = this.ppScoreBookToText(book);
+        if(box) box.style.display='block';
+        try{ if(ta){ ta.focus(); ta.select(); } }catch(e){}
+      };
+    }
+  }
+
+  // refresh list
+  const book = this.getPunyopunyoScoreBook();
+  const combos = book.combos || {};
+
+  const sizeLabelMap = {
+    N:'標準 6×12',
+    L:'大 8×16',
+    T:'縦 10×20',
+    T2:'縦 10×24',
+    W:'横 12×10',
+    W2:'横+ 14×9',
+    UW:'超横 16×8',
+  };
+  const distLabelMap = { STD:'標準', BIG:'大きめ', HUGE:'極大', FLAT:'均等' };
+
+  const items = Object.keys(combos).map(k=>{
+    const parts = String(k).split('|');
+    return {
+      k,
+      sizeKey: parts[0] || 'N',
+      distKey: parts[1] || 'STD',
+      maxN: num(parts[2],4),
+      assist: (parts[3] === '1'),
+      bet: num(parts[4],0),
+      best: num(combos[k]?.best,0),
+      plays: num(combos[k]?.plays,0),
+      last: num(combos[k]?.last,0),
+      lastScore: num(combos[k]?.lastScore,0),
+      lastReward: num(combos[k]?.lastReward,0),
+      lastMul: num(combos[k]?.lastMul,0),
+    };
+  });
+  items.sort((a,b)=> (b.best-a.best) || (b.last-a.last));
+
+  const host = document.getElementById('ppScoreList');
+  if(host){
+    if(!items.length){
+      host.innerHTML = '<div class="dim">（まだ記録がありません）</div>';
+    }else{
+      let html = '';
+      const showN = 60;
+      for(const it of items.slice(0, showN)){
+        const sLab = sizeLabelMap[it.sizeKey] || it.sizeKey;
+        const dLab = distLabelMap[it.distKey] || it.distKey;
+        const lastStr = it.last ? (new Date(it.last)).toLocaleString() : '';
+        html += `
+          <div class="ppScoreRow">
+            <div class="ppScoreCfg">${sLab} / ${dLab} / 最大${it.maxN} / 賭け金${it.bet}G${it.assist?' / ｱｼ':''}</div>
+            <div class="ppScoreNums"><b>${it.best}</b><span class="dim"> best</span> <span class="dim">|</span> ${it.lastScore} <span class="dim">last</span></div>
+            <div class="ppScoreMeta dim">${it.plays}回 / ${lastStr}</div>
+          </div>
+        `;
+      }
+      if(items.length>showN){
+        html += `<div class="dim" style="margin-top:8px;">※上位${showN}件のみ表示（テキスト出力には全件含まれます）</div>`;
+      }
+      host.innerHTML = html;
+    }
+  }
+
+  const box = document.getElementById('ppScoreTextBox');
+  if(box) box.style.display='none';
+
+  const ol2 = document.getElementById(idOL);
+  if(ol2) ol2.style.display='flex';
+}
   // セットアップ（賭け金選択）
 
   // セットアップ（賭け金選択）
@@ -1522,6 +1808,12 @@ openHighLow(){
     const hs = this.getPunyopunyoHighScore();
     const lastBet = num(this._ppBet, 0);
 
+    // ぷんよ設定（最大かたまり＆アシスト）
+    if(this._ppMaxN==null) this._ppMaxN = 4; // 既定: 4
+    if(this._ppDistKey==null) this._ppDistKey = 'STD';
+    if(this._ppAssist==null) this._ppAssist = true;
+
+
     set("ぷんよぷんよ","連鎖でスコアUP。報酬は賭け金×実力倍率");
 
     const tabs=$("#townTabs"); if(tabs) tabs.innerHTML='';
@@ -1532,9 +1824,12 @@ openHighLow(){
           <div class="ppRow"><div>所持金</div><div><b id="ppGoldDisp">${gold}</b>G</div></div>
           <div class="ppRow"><div>ハイスコア</div><div><b>${hs}</b></div></div>
                     <div class="ppRow"><div>盤面</div><div id="ppSizeLine"></div></div>
+<div class="ppRow"><div>分布</div><div id="ppDistLine"></div></div>
+<div class="ppRow"><div>最大かたまり</div><div id="ppMaxLine"></div></div>
+<div class="ppRow"><div>アシスト</div><label style="display:flex;align-items:center;gap:10px;user-select:none;"><input type="checkbox" id="ppAssistChk" style="transform:scale(1.25);"><span class="dim">少ない列へ自動</span></label></div>
 <div class="ppRow"><div>賭け金</div><div id="ppBetLine"></div></div>
           <div class="dim" style="margin-top:8px; line-height:1.35">
-            ※0Gでも遊べます（賭け金10G扱い）。勝てばそのまま次の賭け金にできます。
+            ※0Gでも遊べます（賭け金10G扱い）。勝てばそのまま次の賭け金にできます。最大かたまり・分布・盤面が大きいほど倍率が上がります。
           </div>
 
           <div style="margin-top:10px; display:flex; justify-content:center; gap:10px; flex-wrap:wrap">
@@ -1545,72 +1840,152 @@ openHighLow(){
     }
 
     const betLine = $("#ppBetLine");
+    const maxLine = $("#ppMaxLine");
+    const distLine = $("#ppDistLine");
+    const assistChk = $("#ppAssistChk");
 
-    const sizeLine = $("#ppSizeLine");
-    const ppSizePresets = [
-      {k:'N', label:'標準 6×12', w:6, h:12},
-      {k:'L', label:'大 8×16', w:8, h:16},
-      {k:'XL', label:'圧倒 10×20', w:10, h:20},
+    
+const sizeLine = $("#ppSizeLine");
+// 盤面サイズ：粒度を整理＋横長も追加（ドロップダウン）
+const ppSizePresets = [
+  {k:'N',  label:'標準 6×12', w:6,  h:12},
+  {k:'L',  label:'大 8×16',   w:8,  h:16},
+  {k:'T',  label:'縦 10×20',  w:10, h:20},
+  {k:'T2', label:'縦+ 10×24', w:10, h:24},
+  {k:'W',  label:'横 12×10',  w:12, h:10},
+  {k:'W2', label:'横+ 14×9',  w:14, h:9},
+  {k:'UW', label:'超横 16×8', w:16, h:8},
+];
+if(!this._ppSizeKey) this._ppSizeKey = 'N';
+
+const renderSize = ()=>{
+  if(!sizeLine) return;
+  sizeLine.innerHTML='';
+  const cur = String(this._ppSizeKey || 'N');
+  this._ppSizeKey = cur;
+
+  const sel=document.createElement('select');
+  sel.className='ppSelect';
+  for(const s of ppSizePresets){
+    const opt=document.createElement('option');
+    opt.value=s.k;
+    opt.textContent=s.label;
+    if(s.k===cur) opt.selected=true;
+    sel.appendChild(opt);
+  }
+  sel.addEventListener('change', ()=>{
+    this._ppSizeKey = String(sel.value||'N');
+  });
+  sizeLine.appendChild(sel);
+};
+const renderMax = ()=>{
+      if(!maxLine) return;
+      maxLine.innerHTML='';
+      const cur = Math.max(2, Math.min(20, num(this._ppMaxN,4)));
+      this._ppMaxN = cur;
+
+      const sel = document.createElement('select');
+      sel.className = 'ppSelect';
+      const opts = [2,3,4,6,8,10,12,16,20];
+      for(const v of opts){
+        const opt=document.createElement('option');
+        opt.value=String(v);
+        opt.textContent = v + '個';
+        if(v===cur) opt.selected=true;
+        sel.appendChild(opt);
+      }
+      sel.addEventListener('change', ()=>{
+        const v = parseInt(sel.value,10);
+        this._ppMaxN = Math.max(2, Math.min(20, isFinite(v)?v:4));
+      });
+      maxLine.appendChild(sel);
+    };
+
+    
+
+    // 分布（ブロック数の出やすさ）
+    const distPresets = [
+      {k:'STD',  label:'標準'},
+      {k:'BIG',  label:'大きめ'},
+      {k:'FLAT', label:'均等'},
     ];
-    if(!this._ppSizeKey) this._ppSizeKey = 'N';
+    const renderDist = ()=>{
+      if(!distLine) return;
+      distLine.innerHTML='';
+      const cur = String(this._ppDistKey || 'STD');
+      this._ppDistKey = cur;
 
-    const mkSizeBtn = (k,label)=>{
-      const b=document.createElement('div');
-      b.className='btn';
-      b.textContent=label;
-      bindTap(b, ()=>{
-        this._ppSizeKey = k;
-        renderSize();
+      const sel=document.createElement('select');
+      sel.className='ppSelect';
+      for(const d of distPresets){
+        const opt=document.createElement('option');
+        opt.value=d.k;
+        opt.textContent=d.label;
+        if(d.k===cur) opt.selected=true;
+        sel.appendChild(opt);
+      }
+      sel.addEventListener('change', ()=>{
+        this._ppDistKey = String(sel.value||'STD');
       });
-      return b;
+      distLine.appendChild(sel);
     };
-
-    const renderSize = ()=>{
-      if(!sizeLine) return;
-      sizeLine.innerHTML='';
-      for(const s of ppSizePresets){
-        const b=mkSizeBtn(s.k, s.label);
-        if(s.k===this._ppSizeKey) b.classList.add('sel');
-        sizeLine.appendChild(b);
-      }
-    };
-
-    const betOptionsBase = [10,20,50,100,200,500,1000,2000,5000,10000];
-    let betOptions = betOptionsBase.filter(v=>v<=gold);
-    if(gold<=0) betOptions = [0];
-    if(gold>0 && lastBet>0 && !betOptions.includes(lastBet) && lastBet<=gold) betOptions.unshift(lastBet);
-
-    const mkBtn = (v,label)=>{
-      const b=document.createElement('div');
-      b.className='btn';
-      b.textContent=label || (v===0?'10G扱い':(' '+v+'G '));
-      bindTap(b, ()=>{
-        this._ppBet = v;
-        renderBet();
+// assist checkbox (default ON)
+    if(assistChk){
+      assistChk.checked = (this._ppAssist!==false);
+      assistChk.addEventListener('change', ()=>{
+        this._ppAssist = !!assistChk.checked;
       });
-      return b;
-    };
+    }
 
-    const renderBet = ()=>{
-      if(!betLine) return;
-      betLine.innerHTML='';
-      const cur = (gold<=0) ? 0 : (num(this._ppBet,0) || Math.min( (lastBet>0 && lastBet<=gold)?lastBet:10, gold));
-      if(gold>0 && !this._ppBet) this._ppBet = cur;
-      if(gold<=0) this._ppBet = 0;
+const betOptionsBase = [10,50,100,500,1000,5000,10000];
+let betOptions = betOptionsBase.filter(v=>v<=gold);
+if(gold<=0) betOptions = [0];
+if(gold>0 && lastBet>0 && !betOptions.includes(lastBet) && lastBet<=gold) betOptions.unshift(lastBet);
 
-      for(const v of betOptions){
-        const b=mkBtn(v);
-        if(v===num(this._ppBet,0)) b.classList.add('sel');
-        betLine.appendChild(b);
-      }
-      if(gold>0){
-        const allBtn = mkBtn(-1, '全額');
-        if(num(this._ppBet,0)===-1) allBtn.classList.add('sel');
-        betLine.appendChild(allBtn);
-        // mkBtn の bindTap は -1 でOK（renderBetに戻る）
-      }
-    };
-    renderSize();
+const renderBet = ()=>{
+  if(!betLine) return;
+  betLine.innerHTML='';
+  const cur = (gold<=0) ? 0 : (num(this._ppBet,0) || Math.min( (lastBet>0 && lastBet<=gold)?lastBet:10, gold));
+  if(gold>0 && (this._ppBet==null || this._ppBet===0)) this._ppBet = cur;
+  if(gold<=0) this._ppBet = 0;
+
+  const sel=document.createElement('select');
+  sel.className='ppSelect';
+
+  if(gold<=0){
+    const opt=document.createElement('option');
+    opt.value='0';
+    opt.textContent='10G扱い';
+    sel.appendChild(opt);
+    sel.value='0';
+  }else{
+    for(const v of betOptions){
+      const opt=document.createElement('option');
+      opt.value=String(v);
+      opt.textContent= v+'G';
+      sel.appendChild(opt);
+    }
+    const optAll=document.createElement('option');
+    optAll.value='-1';
+    optAll.textContent='全額';
+    sel.appendChild(optAll);
+
+    const want = String(num(this._ppBet, cur));
+    sel.value = (Array.from(sel.options).some(o=>o.value===want)) ? want : String(cur);
+    this._ppBet = parseInt(sel.value,10);
+  }
+
+  sel.addEventListener('change', ()=>{
+    const v = parseInt(sel.value,10);
+    this._ppBet = isFinite(v) ? v : 0;
+  });
+  betLine.appendChild(sel);
+};
+
+renderSize();
+
+    renderDist();
+    renderMax();
     renderBet();
 
     // START（iPhoneで押せない/無反応に見える時があるため、リスト内にも配置して確実に拾う）
@@ -1630,7 +2005,7 @@ openHighLow(){
         bet = Math.max(0, Math.min(bet, goldNow));
         if(bet===0) bet = Math.min(10, goldNow);
       }
-      this.startPunyopunyo({bet, sizeKey: this._ppSizeKey});
+      this.startPunyopunyo({bet, sizeKey: this._ppSizeKey, maxN: this._ppMaxN, distKey: this._ppDistKey, assist: (this._ppAssist!==false)});
           }catch(err){
         console.error(err && err.stack ? err.stack : err);
         try{ this.msg("START失敗: "+(err && err.message ? err.message : String(err))); }catch(e){}
@@ -1670,29 +2045,65 @@ openHighLow(){
 
   // 報酬倍率（HiGH&LOWより良く）
   ppCalcMultiplier(score){
-    // だいたい 1.2〜3.0 の範囲（上限）
-    const m = 1.20 + Math.min(1.80, score/6000);
-    return Math.max(1.20, Math.min(3.00, m));
+    // ぷんよぷんよ：スコアが基準未満だと倍率1未満（＝マイナス収支）になり得るようにする
+    // ※スコア0は完全に0扱い（報酬も0）
+    score = num(score, 0);
+    if(score<=0) return 0;
+
+    const pp = this._pp || {};
+    const maxN = Math.max(2, Math.min(20, num(pp?.maxN ?? this._ppMaxN, 4)));
+    const distKey = String(pp?.distKey ?? this._ppDistKey ?? 'STD');
+
+    // 難しい設定ほど「必要スコア」を下げる（=同じスコアでも倍率が上がりやすい）
+    const maxBoost = Math.min(1.70, 1 + (maxN - 2) * 0.03); // 2→1.00, 20→1.54
+    const distBoostMap = { STD:1.00, BIG:1.12, HUGE:1.25, FLAT:1.08 };
+    const distBoost = distBoostMap[distKey] ?? 1.00;
+
+    const area = Math.max(1, num(pp?.w,6) * num(pp?.h,12));
+    const baseArea = 6*12;
+    const sizeBoost = 1 + Math.min(0.40, Math.max(0, (area - baseArea) / 400)); // 最大 +40%
+
+    const diff = Math.max(0.70, maxBoost * distBoost * sizeBoost);
+
+    // ブレークイーブン基準（ここを"越えない"と倍率1未満になりやすい）
+    // 難しいほど基準は下がる
+    const baseTarget = 2400;
+    const target = Math.max(500, Math.floor(baseTarget / diff));
+
+    const r = score / target;
+    let m;
+
+    if(r <= 1){
+      // 基準未満は 0.0〜0.98 の範囲（=収支マイナス）
+      m = 0.05 + 0.93 * Math.max(0, r); // r=1 でも 0.98
+    }else{
+      // 基準超えでやっとプラス帯へ（伸びは抑える）
+      m = 0.98 + (r - 1) * 0.90;
+    }
+
+    // 安全柵
+    if(!isFinite(m)) m = 0;
+    return Math.max(0, Math.min(6.00, m));
   }
 
   startPunyopunyo(cfg){
     const betReq = num(cfg?.bet,0);
     const goldNow = num(this.p.gold,0);
 
+    // 0G特別(借り賭け)の内部用
+    this._ppLoanBet = 0;
+
     // 実際に賭けに使う金額（0G時は 10G扱い）
     let effBet = betReq;
     let betStore = betReq;
 
     if(goldNow<=0){
-      // 0Gなら、賭け金未指定/0 は 10G扱い（差し引きはしない）
-      if(betReq<=0){
-        effBet = 10;
-        betStore = 0; // UI上は「10G扱い」
-      }else{
-        effBet = Math.max(0, betReq);
-        betStore = Math.max(0, betReq);
-      }
+      // 0G時は「借り賭け(10G)」扱いに固定（開始時の差し引きはしない）
+      // ※賭け金を指定されても0Gでは支払えないため、ここでは一律10G扱いにして精算時に差額だけ反映する
+      effBet = 10;
+      betStore = 0;   // 実際に所持金からは引かない
       this._ppBet = 0;
+      this._ppLoanBet = effBet;
     }else{
       if(betReq===-1) effBet = goldNow; // 全額
       effBet = Math.max(0, Math.min(effBet, goldNow));
@@ -1708,16 +2119,31 @@ openHighLow(){
     const bet = betStore;
 
     const ppSizes = {
-      N:{w:6,h:12,label:'標準'},
-      L:{w:8,h:16,label:'大'},
-      XL:{w:10,h:20,label:'圧倒'},
-    };
+  N:{w:6,h:12,label:'標準 6×12'},
+  L:{w:8,h:16,label:'大 8×16'},
+  T:{w:10,h:20,label:'縦 10×20'},
+  T2:{w:10,h:24,label:'縦+ 10×24'},
+  W:{w:12,h:10,label:'横 12×10'},
+  W2:{w:14,h:9,label:'横+ 14×9'},
+  UW:{w:16,h:8,label:'超横 16×8'},
+};
     const sizeKey = (cfg && cfg.sizeKey) ? cfg.sizeKey : (this._ppSizeKey || 'N');
     const sz = ppSizes[sizeKey] || ppSizes.N;
     const W = sz.w, H = sz.h;
     this._ppSizeKey = sizeKey;
 
-    const nextSpec = this.ppGenPieceSpec();
+    const maxN = Math.max(2, Math.min(20, num(cfg?.maxN, (this._ppMaxN==null?4:this._ppMaxN))));
+    this._ppMaxN = maxN;
+
+    const distKey = (cfg && cfg.distKey) ? String(cfg.distKey) : String(this._ppDistKey || 'STD');
+    this._ppDistKey = distKey;
+
+    this._ppMaxN = maxN;
+    const assist = (cfg && cfg.assist!=null) ? !!cfg.assist : (this._ppAssist!==false);
+    this._ppAssist = assist;
+
+
+    const nextSpec = this.ppGenPieceSpec(maxN, distKey);
     this._pp = {
       w:W, h:H,      board: Array.from({length:H}, ()=>Array(W).fill(null)),
       cur:null,
@@ -1728,8 +2154,13 @@ openHighLow(){
       score:0,
       chain:0,
       resolving:false,
+      sizeKey,
+      maxN,
+      assist,
+      distKey,
       over:false,
       bet,
+      loanBet: this._ppLoanBet,
       effBet,
       paid:false, // 精算済
       lastTs:0,
@@ -1741,6 +2172,9 @@ openHighLow(){
     this.spawnPunyopunyo();
     this.openPunyopunyoPlay();
   }
+  // ぷんよぷんよ：おじゃま（隣接消しでのみ消える）
+  static get PP_OJAMA(){ return -1; }
+
 
   ppRandColor(){
     // 見分けやすい 5 色
@@ -1748,15 +2182,92 @@ openHighLow(){
     return cs[rand(0, cs.length-1)];
   }
 
+  // ぷんよぷんよ：おじゃま混入（賭け金×かたまりサイズで増える）
+  ppApplyOjamaToBlocks(blocks){
+    if(!Array.isArray(blocks)) return blocks;
+    const n = blocks.length|0;
+    if(n<=2) return blocks; // 2個ピースは遊びやすさ優先で通常のみ
+
+    const pp=this._pp||{};
+    const betRaw = num(pp.bet,0);
+    const betDisp = (betRaw===0) ? 10 : Math.max(0, betRaw);
+
+    // betFactor: 10→0, 10000→1（対数スケール）
+    const log10 = (x)=>Math.log(x)/Math.LN10;
+    const betFactor = Math.max(0, Math.min(1, (log10(Math.max(10, betDisp)) - 1) / 3));
+
+    // 大きいかたまりほど、低賭けでもそれなりに混ざる
+    const baseN = Math.max(0, Math.min(1, (n - 2) / 18)); // 2→0, 20→1
+    let rate = 0.05 + baseN*0.25 + betFactor*0.45;        // 20個＆10000Gで約0.75
+    rate = Math.max(0, Math.min(0.85, rate));
+
+    let oj = Math.round(rate * n);
+    oj = Math.max(0, Math.min(n-1, oj)); // 最低1個は通常を残す
+
+    if(oj<=0) return blocks;
+
+    // pivotは残しやすく（見た目の分かりやすさ）
+    const idxs = [];
+    for(let i=0;i<n;i++){
+      if(blocks[i] && blocks[i].pivot) continue;
+      idxs.push(i);
+    }
+    const pool = (idxs.length>=oj) ? idxs : Array.from({length:n}, (_,i)=>i);
+
+    // shuffle
+    for(let i=pool.length-1;i>0;i--){
+      const j = rand(0,i);
+      const t=pool[i]; pool[i]=pool[j]; pool[j]=t;
+    }
+    const pick = pool.slice(0, oj);
+    for(const i of pick){
+      if(blocks[i]) blocks[i].c = Game.PP_OJAMA;
+    }
+    return blocks;
+  }
+
+
 
   // ぷんよぷんよ：次ピース仕様（2個落下に加えて、たまに3-6ブロックの大ピース）
-  ppGenPieceSpec(){
+  ppGenPieceSpec(maxNIn, distKeyIn){
     const r = Math.random();
+    const maxN = Math.max(2, Math.min(20, num(maxNIn, 4)));
+    const distKey = String(distKeyIn || (this._pp && this._pp.distKey) || this._ppDistKey || 'STD');
+
     let n = 2;
-    if(r < 0.20) n = 3;
-    else if(r < 0.29) n = 4;
-    else if(r < 0.297) n = 5;
-    else if(r < 0.300) n = 6;
+
+    // 分布：maxN の範囲で「大きいほど出にくい」を基調に、プリセットで調整
+    //  - STD: 標準（2が多い）
+    //  - BIG: 大きめ多め
+    //  - HUGE: 極大多め
+    //  - FLAT: ほぼ均等
+    if(maxN > 2){
+      const keys = [];
+      for(let k=2;k<=maxN;k++) keys.push(k);
+
+      let alpha = 0.35; // 大きいほど減衰（STD）
+      if(distKey==='BIG')  alpha = 0.25;
+      if(distKey==='HUGE') alpha = 0.15;
+      if(distKey==='FLAT') alpha = 0.00;
+
+      const weights = keys.map(k=>{
+        if(alpha<=0) return 1;
+        let w = Math.exp(-alpha*(k-2));
+        // BIG/HUGE は「上側」を少し持ち上げる（maxNが大きいほど効果が出る）
+        if(distKey==='BIG' || distKey==='HUGE'){
+          const t = (maxN<=2) ? 0 : (k-2)/(maxN-2);
+          w *= (1 + 0.35*t);
+        }
+        return w;
+      });
+
+      const sum = weights.reduce((a,b)=>a+b,0) || 1;
+      let acc = 0;
+      for(let i=0;i<keys.length;i++){
+        acc += (weights[i]/sum);
+        if(r <= acc){ n = keys[i]; break; }
+      }
+    }
 
     if(n === 2){
       const a = this.ppRandColor();
@@ -1769,6 +2280,7 @@ openHighLow(){
     }
 
     const blocks = this.ppGenRandomClusterBlocks(n);
+    this.ppApplyOjamaToBlocks(blocks);
     const previewColors = [
       blocks[0]?.c ?? this.ppRandColor(),
       blocks[1]?.c ?? blocks[0]?.c ?? this.ppRandColor(),
@@ -1779,8 +2291,8 @@ openHighLow(){
   // ランダム生成：連結したブロックの集合を作る（固定パターン非依存）
   ppGenRandomClusterBlocks(n){
     const dirs = [[1,0],[-1,0],[0,1],[0,-1]];
-    const maxSpan = (n<=4) ? 3 : 4;
-    const tries = 80;
+    const maxSpan = Math.max(4, Math.ceil(Math.sqrt(Math.max(1,n))) + 2);
+    const tries = (n<=10) ? 120 : 220;
 
     const makeOnce = ()=>{
       const set = new Set(["0,0"]);
@@ -1823,19 +2335,72 @@ openHighLow(){
       cells = Array.from({length:n}, (_,i)=>({dx:0, dy:-i}));
     }
 
-    const baseColor = this.ppRandColor();
-    const blocks = cells.map((c, i)=>{
-      let col = baseColor;
-      if(i>0 && Math.random() > 0.70){
-        let alt = this.ppRandColor();
-        let guard=10;
-        while(alt===baseColor && guard-- > 0) alt = this.ppRandColor();
-        col = alt;
-      }
-      return {dx:c.dx, dy:c.dy, c:col, pivot:(c.dx===0 && c.dy===0)};
-    });
+    
+// 色割り当て：同色が4つ以上つながる頻度を下げる（2～3連結は残す）
+const palette = [0,1,2,3,4];
+const colors = new Array(cells.length).fill(null);
 
-    blocks.sort((a,b)=> (b.pivot?1:0) - (a.pivot?1:0));
+const neighIdx = cells.map((a,i)=>{
+  const out=[];
+  for(let j=0;j<cells.length;j++){
+    if(i===j) continue;
+    const b=cells[j];
+    if(Math.abs(a.dx-b.dx)+Math.abs(a.dy-b.dy)===1) out.push(j);
+  }
+  return out;
+});
+
+const compSizeWith = (i, col)=>{
+  // i を col として見たときの同色連結サイズ（ピース内のみ）
+  const seen=new Set([i]);
+  const st=[i];
+  while(st.length){
+    const cur=st.pop();
+    for(const nb of neighIdx[cur]){
+      if(seen.has(nb)) continue;
+      const c = (nb===i) ? col : colors[nb];
+      if(c===col){
+        seen.add(nb);
+        st.push(nb);
+      }
+    }
+  }
+  return seen.size;
+};
+
+for(let i=0;i<cells.length;i++){
+  const nbCols = neighIdx[i].map(j=>colors[j]).filter(v=>v!=null);
+  let picked=null;
+  const tryN=24;
+  for(let t=0;t<tryN;t++){
+    let cand;
+    // 近接色に寄せて2～3連結は作るが、4以上は抑える
+    if(nbCols.length && Math.random()<0.55){
+      cand = nbCols[rand(0, nbCols.length-1)];
+    }else{
+      cand = palette[rand(0, palette.length-1)];
+    }
+
+    const sz = compSizeWith(i, cand);
+    if(sz>=4){
+      // “爽快感”のために極まれに許可（ただし大ピースほど抑える）
+      const allow = (cells.length<=6) ? 0.08 : 0.03;
+      if(Math.random()<allow){
+        picked=cand; break;
+      }
+      continue;
+    }
+    picked=cand; break;
+  }
+  if(picked==null) picked = palette[rand(0, palette.length-1)];
+  colors[i]=picked;
+}
+
+const blocks = cells.map((c,i)=>({
+  dx:c.dx, dy:c.dy, c:colors[i],
+  pivot:(c.dx===0 && c.dy===0)
+}));
+blocks.sort((a,b)=> (b.pivot?1:0) - (a.pivot?1:0));
     if(!blocks[0].pivot) blocks[0].pivot = true;
 
     return blocks;
@@ -1924,6 +2489,65 @@ openHighLow(){
     return pp.board[y][x]!=null;
   }
 
+
+  ppAssistApply(){
+    const pp=this._pp;
+    if(!pp || pp.over || !pp.cur) return;
+
+    // 各列の“埋まり具合”（ブロック数）を計算
+    const heights = new Array(pp.w).fill(0);
+    for(let x=0;x<pp.w;x++){
+      let c=0;
+      for(let y=0;y<pp.h;y++){
+        if(pp.board[y] && pp.board[y][x]!=null) c++;
+      }
+      heights[x]=c;
+    }
+
+    const cols = [];
+    for(const b of pp.cur.blocks || []){
+      if(cols.indexOf(b.dx)===-1) cols.push(b.dx);
+    }
+    if(!cols.length) cols.push(0);
+
+    // 現在のピースが置ける範囲を推定
+    let minX=999, maxX=-999;
+    for(const b of pp.cur.blocks || []){
+      minX=Math.min(minX, b.dx);
+      maxX=Math.max(maxX, b.dx);
+    }
+    if(!isFinite(minX)){ minX=0; maxX=0; }
+
+    const minSpawnX = -minX;
+    const maxSpawnX = (pp.w-1) - maxX;
+
+    let bestX = pp.cur.x;
+    let bestCost = Infinity;
+
+    for(let x=minSpawnX; x<=maxSpawnX; x++){
+      // 置けない位置は除外
+      const test = {...pp.cur, x};
+      if(!this.ppCanPlace(test)) continue;
+
+      let cost = 0;
+      for(const dx of cols){
+        const cx = x + dx;
+        if(cx>=0 && cx<pp.w) cost += heights[cx];
+        else cost += 999;
+      }
+      // タイブレーク：現在位置に近い方
+      const tie = Math.abs(x-pp.cur.x)*0.01;
+      cost += tie;
+
+      if(cost < bestCost){
+        bestCost = cost;
+        bestX = x;
+      }
+    }
+
+    pp.cur.x = bestX;
+  }
+
   ppCanPlace(cur){
     const pp=this._pp;
     for(const p of this.ppCellsOfCur(cur)){
@@ -1934,8 +2558,8 @@ openHighLow(){
 
   spawnPunyopunyo(){
     const pp=this._pp;
-    const spec = pp.nextSpec || this.ppGenPieceSpec();
-    pp.nextSpec = this.ppGenPieceSpec();
+    const spec = pp.nextSpec || this.ppGenPieceSpec(pp.maxN);
+    pp.nextSpec = this.ppGenPieceSpec(pp.maxN);
     pp.next = pp.nextSpec.previewColors;
 
     const blocks = spec.blocks || [];
@@ -1962,6 +2586,8 @@ openHighLow(){
       return;
     }
     pp.cur=cur;
+    // Assist: 少ない列へ自動で寄せる
+    try{ if(pp.assist) this.ppAssistApply(); }catch(e){}
   }
 
   openPunyopunyoPlay(){
@@ -1988,16 +2614,19 @@ openHighLow(){
           </div>
           <div class="ppHudRow dim">
             <div>High: <b id="ppHigh">${this.getPunyopunyoHighScore()}</b></div>
+            <button class="ppMiniBtn" id="ppScoreBookBtn">スコア一覧</button>
             <div>Gold: <b id="ppGold">${gold}</b>G</div>
           </div>
           <div class="ppHudRow dim">
-            <div>Next: <span class="ppNextDot ppC${pp.next[0]}"></span><span class="ppNextDot ppC${pp.next[1]}"></span></div>
             <div id="ppStatus"></div>
           </div>
         </div>
         <canvas id="ppCanvas" class="ppCanvas"></canvas>
       </div>
     `;
+
+    const sbBtn = $("#ppScoreBookBtn");
+    if(sbBtn) bindTap(sbBtn, ()=>this.ppOpenScoreBookWindow());
 
     // controls（iPhoneで押しやすい大きさ＆間隔にする）
     const actions=$("#townActions");
@@ -2007,33 +2636,45 @@ openHighLow(){
     ctrl.className='ppCtrlWrap';
     if(actions) actions.appendChild(ctrl);
 
-    // 1行目：左右＆ソフトドロップ
-    const row1=document.createElement('div'); row1.className='ppCtrlRow';
-    ctrl.appendChild(row1);
-    const mkRow=(row,label,fn,cls='')=>{
-      const b=document.createElement('div');
-      b.className=('ppBtn '+cls).trim();
-      b.textContent=label;
-      bindTap(b, ()=>fn());
-      row.appendChild(b);
-      return b;
-    };
-    mkRow(row1,'←', ()=>this.ppMove(-1),'ppWide');
-    const downBtn=document.createElement('div');
-    downBtn.className='ppBtn ppWide';
-    downBtn.textContent='↓(長押し)';
-    downBtn.addEventListener('pointerdown', (e)=>{ e.preventDefault(); this.ppSoft(true); }, {passive:false});
-    downBtn.addEventListener('pointerup',   (e)=>{ e.preventDefault(); this.ppSoft(false); }, {passive:false});
-    downBtn.addEventListener('pointercancel',(e)=>{ e.preventDefault(); this.ppSoft(false); }, {passive:false});
-    row1.appendChild(downBtn);
-    mkRow(row1,'→', ()=>this.ppMove(1),'ppWide');
+    
+    
+// 1行目：回転＆ソフトドロップ（長押し）
+const row1=document.createElement('div'); row1.className='ppCtrlRow';
+ctrl.appendChild(row1);
+const mkRow=(row,label,fn,cls='')=>{
+  const b=document.createElement('div');
+  b.className=('ppBtn '+cls).trim();
+  b.textContent=label;
+  bindTap(b, ()=>fn());
+  row.appendChild(b);
+  return b;
+};
+mkRow(row1,'⟲', ()=>this.ppRotate(-1),'ppWide');
+const downBtn=document.createElement('div');
+downBtn.className='ppBtn ppWide';
+downBtn.textContent='↓(長押し)';
+downBtn.addEventListener('pointerdown', (e)=>{ e.preventDefault(); this.ppSoft(true); }, {passive:false});
+downBtn.addEventListener('pointerup',   (e)=>{ e.preventDefault(); this.ppSoft(false); }, {passive:false});
+downBtn.addEventListener('pointercancel',(e)=>{ e.preventDefault(); this.ppSoft(false); }, {passive:false});
+row1.appendChild(downBtn);
+mkRow(row1,'⟳', ()=>this.ppRotate(1),'ppWide');
 
-    // 2行目：回転＆ハードドロップ
-    const row2=document.createElement('div'); row2.className='ppCtrlRow';
-    ctrl.appendChild(row2);
-    mkRow(row2,'⟲', ()=>this.ppRotate(-1),'ppWide');
-    mkRow(row2,'DROP', ()=>this.ppHardDrop(),'ppWide');
-    mkRow(row2,'⟳', ()=>this.ppRotate(1),'ppWide');
+// 2行目：左右＆ハードドロップ（重要なので下段中央）
+const row2=document.createElement('div'); row2.className='ppCtrlRow';
+ctrl.appendChild(row2);
+mkRow(row2,'←', ()=>this.ppMove(-1),'ppWide ppEmph');
+mkRow(row2,'DROP', ()=>this.ppHardDrop(),'ppWide ppEmph ppDrop');
+mkRow(row2,'→', ()=>this.ppMove(1),'ppWide ppEmph');
+
+// アシスト（少ない列へ寄せる）
+    const rowA=document.createElement('div'); rowA.className='ppCtrlRow';
+    ctrl.appendChild(rowA);
+    const assistBtn = mkRow(rowA, (pp.assist?'アシストON':'アシストOFF'), ()=>{
+      pp.assist = !pp.assist;
+      this._ppAssist = pp.assist;
+      assistBtn.textContent = (pp.assist?'アシストON':'アシストOFF');
+    },'ppWide');
+    mkRow(rowA,'寄せる', ()=>{ this.ppAssistApply(); this.ppDraw(); },'ppWide');
 
     // 3行目：終了系（誤タップ防止で幅広）
     const row3=document.createElement('div'); row3.className='ppCtrlRow';
@@ -2083,7 +2724,19 @@ openHighLow(){
   }
 
 
-  ppStep(ts){
+  
+ppDrawMaybe(ts, force=false){
+  const pp=this._pp; if(!pp) return;
+  if(!pp._drawMin) pp._drawMin = 33; // about 30fps
+  if(!pp._lastDraw) pp._lastDraw = 0;
+  const now = (ts!=null) ? ts : (performance && performance.now ? performance.now() : Date.now());
+  if(force || (now - pp._lastDraw >= pp._drawMin)){
+    pp._lastDraw = now;
+    this.ppDraw();
+  }
+}
+
+ppStep(ts){
     const pp=this._pp; if(!pp || pp.over) return;
 
     if(!pp.lastTs) pp.lastTs = ts;
@@ -2094,11 +2747,11 @@ openHighLow(){
 
     if(pp.anim){
       this.ppAnimStep(dt);
-      this.ppDraw();
+      this.ppDrawMaybe(ts);
       return;
     }
 
-    if(pp.resolving) { this.ppDraw(); return; }
+    if(pp.resolving) { this.ppDrawMaybe(ts); return; }
 
     pp.acc += dt;
     const fall = pp.soft ? 55 : pp.fallMs;
@@ -2109,7 +2762,7 @@ openHighLow(){
         return;
       }
     }
-    this.ppDraw();
+    this.ppDrawMaybe(ts);
   }
 
   ppFxStep(dt){
@@ -2196,7 +2849,9 @@ ppTriggerClearFx(cells, chain){
   }
 
   // Particle burst: more, larger, faster (chain amplifies)
-  const baseN = Math.min(22, 10 + Math.floor(cells.length/1.6));
+  const maxParticles = 1200;
+  if(fx.particles.length > maxParticles) fx.particles = fx.particles.slice(-maxParticles);
+  const baseN = Math.min(12, 6 + Math.floor(cells.length/3.2));
   const chainBoost = 1 + 0.22*Math.min(8, chain);
   for(const c of cells){
     const cx = (c.x + 0.5) * cell;
@@ -2206,6 +2861,7 @@ ppTriggerClearFx(cells, chain){
     for(let i=0;i<n;i++){
       const ang = Math.random()*Math.PI*2;
       const sp = (0.10 + Math.random()*0.34) * chainBoost;
+      if(fx.particles.length >= maxParticles) break;
       fx.particles.push({
         x:cx, y:cy,
         vx:Math.cos(ang)*sp,
@@ -2224,6 +2880,7 @@ ppTriggerClearFx(cells, chain){
     for(let k=0;k<sN;k++){
       const ang = Math.random()*Math.PI*2;
       const sp = (0.22 + Math.random()*0.38) * chainBoost;
+      if(fx.particles.length >= maxParticles) break;
       fx.particles.push({
         x:cx, y:cy,
         vx:Math.cos(ang)*sp,
@@ -2375,7 +3032,7 @@ async ppResolveAsync(){
       pp.chain += 1;
 
       // score
-      const add = this.ppScoreAdd(cleared.count, pp.chain);
+      const add = this.ppScoreAdd((cleared.normalCount!=null?cleared.normalCount:cleared.count), pp.chain);
       pp.score = num(pp.score,0) + add;
 
       // clear cells
@@ -2429,17 +3086,19 @@ async ppResolveAsync(){
       }
     }
   }
-
   ppClearGroups(){
     const pp=this._pp;
     const vis=Array.from({length:pp.h}, ()=>Array(pp.w).fill(false));
     const dirs=[[1,0],[-1,0],[0,1],[0,-1]];
-    let toClear=[];
+    const normalClear=[];
+    const seenNormal=new Set();
+
     for(let y=0;y<pp.h;y++){
       for(let x=0;x<pp.w;x++){
         if(vis[y][x]) continue;
         const v=pp.board[y][x];
         if(v==null) continue;
+        if(v===Game.PP_OJAMA) { vis[y][x]=true; continue; } // おじゃまは連結消し対象外
         vis[y][x]=true;
         const comp=[[x,y]];
         const q=[[x,y]];
@@ -2457,15 +3116,40 @@ async ppResolveAsync(){
           }
         }
         if(comp.length>=4){
-          toClear = toClear.concat(comp.map(p=>({x:p[0],y:p[1]})));
+          for(const p of comp){
+            const k=p[0]+","+p[1];
+            if(seenNormal.has(k)) continue;
+            seenNormal.add(k);
+            normalClear.push({x:p[0],y:p[1]});
+          }
         }
       }
     }
-    // clear
+
+    if(normalClear.length<=0) return {count:0, normalCount:0, cells:[]};
+
+    // おじゃまは「消えた通常ぷんよに隣接している分だけ」一緒に消える
+    const ojamaClear=[];
+    const seenOj=new Set();
+    for(const p of normalClear){
+      for(const [dx,dy] of dirs){
+        const nx=p.x+dx, ny=p.y+dy;
+        if(nx<0||nx>=pp.w||ny<0||ny>=pp.h) continue;
+        if(pp.board[ny][nx]===Game.PP_OJAMA){
+          const k=nx+","+ny;
+          if(seenOj.has(k)) continue;
+          seenOj.add(k);
+          ojamaClear.push({x:nx,y:ny});
+        }
+      }
+    }
+
+    const toClear = normalClear.concat(ojamaClear);
+
     for(const p of toClear){
       pp.board[p.y][p.x]=null;
     }
-    return {count:toClear.length, cells:toClear};
+    return {count:toClear.length, normalCount:normalClear.length, cells:toClear};
   }
 
   ppScoreAdd(cleared, chain){
@@ -2481,13 +3165,24 @@ async ppResolveAsync(){
     if(pp.paid) return;
     // 精算：forceQuit でもスコアに応じて支払う（途中終了もOK）
     const betRaw = num(pp.bet,0);
-    const betDisp = (betRaw===0) ? 10 : betRaw;
+    const loanBet = num(pp.loanBet,0);
+    const virtBet = (loanBet>0) ? loanBet : betRaw;
 
-    // ※賭け金の差し引きは startPunyopunyo() 開始時に実施済み
-const mul = this.ppCalcMultiplier(pp.score);
-    const reward = Math.floor((betDisp) * mul);
-    this.p.gold = num(this.p.gold,0) + reward;
-      this.afterGoldChange();
+    const mul = this.ppCalcMultiplier(pp.score);
+    const reward = (pp.score<=0) ? 0 : Math.floor(virtBet * mul);
+
+    // スコア記録（設定別・ローカル＋セーブコード対象）
+    this.ppRecordPunyopunyoScore(pp, mul, reward, forceQuit);
+
+    if(loanBet>0){
+      // 0G特別（借り賭け）：差額だけ反映（負けは0で止める）
+      const delta = reward - virtBet;
+      this.p.gold = Math.max(0, num(this.p.gold,0) + delta);
+    }else{
+      // 通常：開始時に賭け金を支払い済みなので、払い戻し額(reward)を加算
+      this.p.gold = num(this.p.gold,0) + reward;
+    }
+    this.afterGoldChange();
 
     // high score save
     const hs = this.getPunyopunyoHighScore();
@@ -2525,12 +3220,12 @@ const mul = this.ppCalcMultiplier(pp.score);
       if(goldNow<=0) nextBet = 0;
       if(nextBet===-1) nextBet = goldNow;
       if(nextBet>goldNow && goldNow>0) nextBet = goldNow;
-      this.startPunyopunyo({bet: nextBet});
+      this.startPunyopunyo({bet: nextBet, sizeKey: pp.sizeKey, maxN: pp.maxN, assist: pp.assist});
     });
     addBtn('続ける（全額）', ()=>{
       const goldNow = num(this.p.gold,0);
       if(goldNow<=0){
-        this.startPunyopunyo({bet:0});
+        this.startPunyopunyo({bet:0, sizeKey: pp.sizeKey, maxN: pp.maxN, assist: pp.assist, sizeKey: pp.sizeKey, maxN: pp.maxN, assist: pp.assist});
       }else{
         this.startPunyopunyo({bet: goldNow});
       }
@@ -2620,6 +3315,35 @@ const palette=[
       const px=x*cell, py=y*cell;
       const r=cell*0.42;
       const cx=px+cell/2, cy=py+cell/2;
+      if(c===Game.PP_OJAMA){
+        // おじゃま：灰色＋×（隣接消しでのみ消える）
+        ctx.save();
+        ctx.globalAlpha = ghost ? 0.35 : 1.0;
+
+        const grad=ctx.createRadialGradient(cx-r*0.25, cy-r*0.35, r*0.2, cx, cy, r);
+        grad.addColorStop(0,'rgba(245,245,255,0.95)');
+        grad.addColorStop(0.35,'rgba(190,190,205,0.95)');
+        grad.addColorStop(1,'rgba(80,80,95,1)');
+        ctx.fillStyle=grad;
+        ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2); ctx.fill();
+
+        ctx.strokeStyle='rgba(0,0,0,0.65)';
+        ctx.lineWidth=Math.max(1, cell*0.08);
+        ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2); ctx.stroke();
+
+        // ×
+        ctx.strokeStyle='rgba(20,20,24,0.85)';
+        ctx.lineWidth=Math.max(1, cell*0.07);
+        const s=r*0.55;
+        ctx.beginPath();
+        ctx.moveTo(cx-s, cy-s); ctx.lineTo(cx+s, cy+s);
+        ctx.moveTo(cx+s, cy-s); ctx.lineTo(cx-s, cy+s);
+        ctx.stroke();
+
+        ctx.restore();
+        return;
+      }
+
       const [base,hi]=palette[c%palette.length];
       const grad=ctx.createRadialGradient(cx-r*0.35, cy-r*0.35, r*0.15, cx, cy, r*1.15);
       grad.addColorStop(0, hi);
@@ -2773,7 +3497,8 @@ const palette=[
     if(sub){
       const gold2=num(this.p.gold,0);
       const betRaw=num(pp.bet,0);
-      const betDisp=(gold2<=0 && betRaw===0)?10:betRaw;
+      const loanBet=num(pp.loanBet,0);
+      const betDisp=(loanBet>0)?loanBet:betRaw;
       sub.textContent = `SCORE ${pp.score} / 連鎖 ${pp.chain} / 賭け金 ${betDisp}G`;
     }
   }
@@ -3720,8 +4445,9 @@ hit(att,def,base){
 
   descend(){
     if(this.mode==='town'){
-      if(this.map[this.p.y][this.p.x]!=='>'){ this.msg("ここには出入口がない"); return; }
-      this.openTownExitMenu("どこへ行きますか？");
+      // 「出る」ボタンは町のどこからでも利用可能（出入口タイルに居なくてもOK）
+      const onGate = (this.map && this.map[this.p.y] && this.map[this.p.y][this.p.x]==='>');
+      this.openTownExitMenu(onGate ? "どこへ行きますか？" : "町を出ますか？（どこからでも選べます）");
       return;
     }
     if(this.map[this.p.y][this.p.x]!=='>'){ this.msg("ここには階段がない"); return; }
@@ -3803,11 +4529,44 @@ hit(att,def,base){
   }
 
 
+
+  // 直線上の最初の命中対象を探す（矢/射撃系共通）
+  // 戻り値: 命中モンスター or null
+  // ついでに this._lineLast へ「最後に到達できた座標」を保存する（外れた矢の落下位置などに利用）
+  lineHit(sx,sy,dx,dy,range){
+    let x=sx, y=sy;
+    let last={x:sx, y:sy};
+    const r = Math.max(1, num(range, 8));
+    for(let i=0;i<r;i++){
+      x += dx; y += dy;
+      if(this.isOut(x,y)) break;
+      if(this.isWall(x,y)) break;
+      last = {x, y};
+      const m = this.monAt(x,y);
+      if(m){
+        this._lineLast = last;
+        return m;
+      }
+    }
+    this._lineLast = last;
+    return null;
+  }
+
+
+
   shootDir(dx,dy){
     if(!this.waitTarget || this.waitTarget.mode!=='shoot') return;
     this.closeShootOL();
+
+    if(!this.p.arrow || num(this.p.ar,0)<=0){
+      this.msg("矢が装填されていない");
+      this.waitTarget=null;
+      this.render();
+      return;
+    }
+
     // 射撃だけ実行（移動しない）
-    const hit = this.lineHit(this.p.x,this.p.y,dx,dy, this.p.arrow.range||8);
+    const hit = this.lineHit(this.p.x,this.p.y,dx,dy, (this.p.arrow.range||8));
     if(hit){
       // 命中
       if(this.p.arrow.kind==="poison"){ hit.poison=3; this.hit(this.p,hit,3); }
@@ -3815,7 +4574,24 @@ hit(att,def,base){
       else if(this.p.arrow.kind==="slow"){ hit.slow=3; this.hit(this.p,hit,1); }
       else if(this.p.arrow.kind==="stun"){ hit.stun=1; this.hit(this.p,hit,8); }
       else { this.hit(this.p,hit,num(this.p.arrow.dmg,5)); }
+    }else{
+      // 外れた矢は届いた最後のマスに落ちる（拾える）
+      try{
+        const last = this._lineLast || {x:this.p.x, y:this.p.y};
+        if(last && (last.x!==this.p.x || last.y!==this.p.y)){
+          const dropped = Game._templateItem('arrow', '矢束', this.p.arrow.kind);
+          if(dropped){
+            dropped.count = 1;
+            dropped.dmg = num(this.p.arrow.dmg, 5);
+            dropped.kind = this.p.arrow.kind || 'normal';
+            dropped.ided = true;
+            this.onItemPlacedOnFloor(dropped, last.x, last.y);
+            this.items.push(dropped);
+          }
+        }
+      }catch(e){}
     }
+
     this.p.ar = Math.max(0, num(this.p.ar,0)-1);
     this.waitTarget=null;
     this.turnStep();
@@ -4368,11 +5144,38 @@ hit(att,def,base){
   }
 
   saveLocal(){ localStorage.setItem('save3', this.getCode()); this.msg("セーブしました"); }
-  getCode(){ return 'R3:'+btoa(encodeURIComponent(JSON.stringify({floor:num(this.floor,1), gold:num(this.p.gold,0)}))); }
-  loadCode(code){ try{ if(!code.startsWith('R3:')) throw 0; const st=JSON.parse(decodeURIComponent(atob(code.slice(3)))); this.floor=num(st.floor,1)||1; this.p.gold=num(st.gold,0)||0; this.gen(this.floor); this.msg("ロードしました"); }catch(e){ alert("読み込みに失敗しました"); } }
+getCode(){
+  const payload = {
+    floor: num(this.floor,1),
+    gold: num(this.p.gold,0),
+    ppHigh: this.getPunyopunyoHighScore(),
+    ppScoreBook: this.getPunyopunyoScoreBook(),
+  };
+  return 'R3:'+btoa(encodeURIComponent(JSON.stringify(payload)));
+}
+loadCode(code){
+  try{
+    if(!code.startsWith('R3:')) throw 0;
+    const st = JSON.parse(decodeURIComponent(atob(code.slice(3))));
+    this.floor = num(st.floor,1) || 1;
+    this.p.gold = num(st.gold,0) || 0;
+
+    // ぷんよスコア帳（あれば復元）
+    if(st.ppHigh!=null) this.setPunyopunyoHighScore(num(st.ppHigh,0));
+    if(st.ppScoreBook) this.setPunyopunyoScoreBook(st.ppScoreBook);
+
+    this.gen(this.floor);
+    this.msg("ロードしました");
+  }catch(e){
+    alert("読み込みに失敗しました");
+  }
+}
+
   escapeToTitle(reason){
     this.msg(reason||"脱出！");
     this.saveHoldToTitle();
+    // 脱出後は「ローカルセーブから続き」を隠す（持ち物差異による上書き消失を防ぐ）
+    try{ localStorage.setItem(LS_ESCAPED_FLAG, String(Date.now())); }catch(e){}
     showTitle();
   }
 
@@ -4463,7 +5266,15 @@ window.addEventListener('DOMContentLoaded', ()=>{
   let g=null;
   setInterval(()=>{ if(g){ g.render(); }}, 1000); // 重なり点滅
 
-  const updateTitle=()=>{ const bestF=localStorage.getItem('bestF')||0; const bestS=localStorage.getItem('bestScore')||0; $("#bestInfo").textContent=`過去の最高到達: ${bestF}階 / スコア: ${bestS}`; };
+  function syncTitleMenuVisibility(){
+    // 脱出後はローカルセーブ再開を隠す（所持品差分で上書き消失しやすいため）
+    let escaped=false;
+    try{ escaped = !!localStorage.getItem(LS_ESCAPED_FLAG); }catch(e){ escaped=false; }
+    const b = $('#btnLocal');
+    if(b) b.style.display = escaped ? 'none' : '';
+  }
+
+  const updateTitle=()=>{ const bestF=localStorage.getItem('bestF')||0; const bestS=localStorage.getItem('bestScore')||0; $("#bestInfo").textContent=`過去の最高到達: ${bestF}階 / スコア: ${bestS}`; syncTitleMenuVisibility(); };
   const showTitle=()=>{ try{ if(g && g.saveGlobalGold) g.saveGlobalGold(); }catch(e){} $("#game").style.display='none'; $("#title").style.display='flex'; updateTitle(); };
   window.showTitle=showTitle;
 
@@ -4477,8 +5288,10 @@ window.addEventListener('DOMContentLoaded', ()=>{
         const ok = confirm("脱出で持ち帰った所持品/レベルを捨てて『新しく始める』？\n※町の預かり/返還品は残ります");
         if(!ok) return;
         localStorage.removeItem(LS_TOWN_HOLD);
+        try{ localStorage.removeItem(LS_ESCAPED_FLAG); }catch(e){}
       }
     }catch(e){}
+    try{ localStorage.removeItem(LS_ESCAPED_FLAG); }catch(e){}
     $("#title").style.display='none';
     $("#game").style.display='block';
     g=new Game();
@@ -4487,6 +5300,13 @@ window.addEventListener('DOMContentLoaded', ()=>{
     g.gen(1);
   }
   function startLocal(){
+    // 脱出後はローカルセーブ再開を禁止（UI非表示だが念のためガード）
+    try{
+      if(localStorage.getItem(LS_ESCAPED_FLAG)){
+        alert("脱出後は所持品が変わるため、『ローカルセーブから続き』は使えません。\n（上書き消失を防ぐため非表示になります）");
+        return;
+      }
+    }catch(e){}
     const code=localStorage.getItem('save3');
     if(!code){ alert("ローカルセーブがありません"); return; }
     $("#title").style.display='none';
@@ -4497,6 +5317,19 @@ window.addEventListener('DOMContentLoaded', ()=>{
   }
 
   function startTown(){
+    // 脱出後でない場合、ローカルセーブがあるまま町へ行くと持ち物差分で混乱するので、
+    // 明示確認→OKならこの時点で削除する。
+    try{
+      const escaped = !!localStorage.getItem(LS_ESCAPED_FLAG);
+      if(!escaped){
+        const hasLocal = !!localStorage.getItem('save3');
+        if(hasLocal){
+          const ok = confirm("ローカルセーブが存在します。\n『町に行く』を選ぶとローカルセーブは削除されます。\n（町に行くことで所持品が変わり、上書きされて消えるのを防ぐため）\n\n町に行きますか？");
+          if(!ok) return;
+          localStorage.removeItem('save3');
+        }
+      }
+    }catch(e){}
     $("#title").style.display='none';
     $("#game").style.display='block';
     g=new Game();
@@ -4505,6 +5338,51 @@ window.addEventListener('DOMContentLoaded', ()=>{
     g.loadHoldFromTitle();
     try{ if(g.loadGlobalGold) g.loadGlobalGold(); }catch(e){}
     g.genTown();
+  }
+
+  function startTownCarry(){
+    // いったん Game を作って「脱出で持ち帰った分 + 町で増えた分」を全部集め、
+    // ただしレベル/ステータスは初期化して開始する。
+    let tmp = new Game();
+    try{ tmp.loadHoldFromTitle(); }catch(e){}
+    try{ if(tmp.loadGlobalGold) tmp.loadGlobalGold(); }catch(e){}
+
+    const holdItems = tmp.extractAllHoldItems();
+    const bankItems = [].concat(tmp.townStorage||[], tmp.townLostFound||[])
+      .map(o=>Game._deserializeItem(o)).filter(Boolean);
+
+    const carryItems = [].concat(holdItems, bankItems);
+    const carryGold = Math.max(0, num(tmp.p && tmp.p.gold, 0));
+
+    const ok = confirm(
+      "『アイテム等を持ち込んではじめる』でダンジョンを開始します。\n" +
+      "持ち込み: 所持金 " + carryGold + "G / アイテム " + carryItems.length + "個\n" +
+      "※レベル/ステータスは初期化（新しく始めると同じ）\n" +
+      "※町の保管（預かり/落とし物）の分は持ち出し扱いで空になります\n" +
+      "開始しますか？"
+    );
+    if(!ok) return;
+
+    // 脱出フラグは「新しい挑戦の開始」で解除
+    try{ localStorage.removeItem(LS_ESCAPED_FLAG); }catch(e){}
+    // 町の保管は消えない（持ち込み開始は“コピー扱い”）
+    // ※複製防止よりも「消えない」を優先
+
+    // 初期化（ステ/レベル）しつつ、持ち込み分だけをインベントリへ
+    tmp.resetPlayerForFreshRun();
+    tmp.inv = carryItems;
+    // 所持金は引き継ぎ
+    tmp.p.gold = carryGold;
+
+    // すぐに hold を更新して「古い持ち込み元」が残らないようにする
+    try{ tmp.saveHoldToTitle(); }catch(e){}
+    try{ tmp.saveGlobalGold(); }catch(e){}
+
+    $("#title").style.display='none';
+    $("#game").style.display='block';
+    g = tmp;
+    syncPickupBtn();
+    g.gen(1);
   }
 
   function startMiniGamesFromTitle(){
@@ -4531,6 +5409,7 @@ window.addEventListener('DOMContentLoaded', ()=>{
   function startCode(){ const code=prompt("セーブコードを入力"); if(!code) return; $("#title").style.display='none'; $("#game").style.display='block'; g=new Game(); syncPickupBtn(); g.loadCode(code.trim()); }
 
   bindTap('#btnNew', startNew);
+  bindTap('#btnTownCarry', startTownCarry);
   bindTap('#btnTown', startTown);
   bindTap('#btnMiniGames', startMiniGamesFromTitle);
   bindTap('#btnLocal', startLocal);
